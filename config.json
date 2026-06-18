@@ -1,0 +1,41 @@
+{
+  "ksef_enabled": true,
+  "payment_type_mappings": {
+    "ONLINE": "PayU",
+    "CASH_ON_DELIVERY": "Za pobraniem ROHLIG SUUS"
+  },
+  "service_mappings": {
+    "delivery_prepaid": "WYSYŁKA KURIERSKA",
+    "delivery_cod": "KOSZT POBRANIA",
+    "additional_services": {
+      "CARRY_IN": "WNIESIENIE TOWARU"
+    }
+  },
+  "product_mappings": {
+    "KUCH MIKR TOSHIBA MM2-EM20PF MB": "MM2-EM20PF(MB) MBLAC",
+    "CHŁODZ ZAMR BEKO BCHA275K4 AAA": "BCHA 275K41SN",
+    "KUCH MIKR TOSHIBA MW2-MM20PF SL SREBRNA": "SREBRNA MW2-MM20PF",
+    "KUCH MIKR TOSHIBA MWP-MG20P WH BIAŁA": "MWP-MG20P BIAŁA GRIL",
+    "KUCH MIKR TOSHIBA MW3-AG20PE": "MW3-AG20PE(BK)",
+    "KUCH MIKR COMFEE CMO-MP0120C-BK CZARNA CCC": "CMO-MP012OC-BK ",
+    "KUCH MIKR COMFEE CMO-MP0120C-WH BIAŁA CCC": "CMO-MP012OC-WH BIAŁA",
+    "HWTOSMBMMWP20WH *MWP-MM20P WH Toshiba kuchnia mikrofalowa  INDD: MWP-MM20P(WH)": "MWP-MM20P(WH) BIAŁA",
+    "HWAMIW60B8EOQBH *DFM66B8EOqBH Amica zmywarka  INDD: 1195603": "DFM 66B8EOQBH",
+    "HWTOSMBMM20PFSL *MW2-MM20PF(SL)Toshiba kuchnia mikrofalowa  INDD: MW2-MM20PF(SL)": "SREBRNA MW2-MM20PF",
+    "KUCH MIKR COMFEE CMO-MP0120C-BK CZARNA HA": "CMO-MP012OC-BK ",
+    "KUCH MIKR TOSHIBA MM2-EM20PF BB": "MM2-EM20PF(MB) MBLAC",
+    "PŁYTA INDUKCYJNA AMICA PIH6540PHTULN": "PIH 6540 PHTULN 3.0",
+    "PŁYTA INDUKCYJNA BEKO HII6400MT": "HII 64400MT",
+    "ZMYWARKA AMICA DFM66BEOQBH": "DFM 66B8EOQBH",
+    "ZMYWARKA MIDEA MDWPF 1333CSS-WE-EU": "MDWEF 1034DSS-WC",
+    "HWTOSMBMMWPMM20 *MWP-MM20P BK Toshiba kuchnia mikrofalowa  INDD: MWP-MM20P(BK)": "MWP-MM20P(BK) CZARNA",
+    "Pralko-suszarka Beko BMM5DFO5841PB": "BMM5DFO5741WPB"
+  },
+  "distributed_costs_keywords": [
+    "opłata transportowa",
+    "oplata transportowa",
+    "koszt przesyłki",
+    "koszt wysyłki",
+    "usługa kurierska"
+  ]
+}
