@@ -341,19 +341,6 @@ class DocumentService:
             self._handle_payment(nowa_fs, invoice_data)
 
             logger.debug("ETAP 6: Zapisywanie dokumentu...")
-            
-            if self._config.mappings.fiscalization_enabled and not invoice_data.customer.nip:
-                fiscal_id = self._config.mappings.fiscal_printer_id
-                if fiscal_id is not None:
-                    try:
-                        nowa_fs.RejestrujNaUF = True
-                        nowa_fs.DrukarkaFiskalnaId = fiscal_id
-                        logger.info(f" -> Oznaczono dokument do fiskalizacji na drukarce o ID: {fiscal_id}")
-                    except Exception as e:
-                        logger.warning(f" -> Nie udało się ustawić parametrów fiskalizacji: {e}")
-                else:
-                    logger.warning(" -> Fiskalizacja włączona, ale brak zdefiniowanego ID drukarki (fiscal_printer_id).")
-
             nowa_fs.Zapisz()
             
             try:
@@ -370,6 +357,31 @@ class DocumentService:
                 utworzony_numer = nowa_fs.NumerPelny
 
             logger.info(f"SUKCES! Pomyślnie utworzono FS (ze skutkiem magazynowym): {utworzony_numer}")
+
+            # --- DODANIE FISKALIZACJI PO ZAPISIE ---
+            if self._config.mappings.fiscalization_enabled and not invoice_data.customer.nip:
+                fiscal_id = self._config.mappings.fiscal_printer_id
+                if fiscal_id is not None:
+                    dok_do_druku = None
+                    try:
+                        logger.debug(f"Rozpoczynam próbę fiskalizacji na drukarce o ID: {fiscal_id}")
+                        dok_do_druku = self._sfera.o_subiekt.SuDokumentyManager.Wczytaj(doc_id)
+                        dok_do_druku.RejestrujNaUF = True
+                        dok_do_druku.DrukarkaFiskalnaId = fiscal_id
+                        # Wywołanie wydruku bez pokazywania okna dialogowego
+                        dok_do_druku.Drukuj(False)
+                        logger.info(f" -> Pomyślnie zrejestrowano dokument '{utworzony_numer}' na drukarce fiskalnej (ID: {fiscal_id}).")
+                    except Exception as e:
+                        logger.warning(f" -> Dokument został zapisany, ale wystąpił błąd podczas wydruku fiskalnego: {e}")
+                    finally:
+                        if dok_do_druku:
+                            try:
+                                dok_do_druku.Zamknij()
+                            except Exception:
+                                pass
+                else:
+                    logger.warning(" -> Fiskalizacja włączona, ale brak zdefiniowanego ID drukarki (fiscal_printer_id).")
+            # --------------------------------------
 
             # ETAP 7: Opcjonalne oznaczenie do KSeF (tylko B2B z NIP)
             if self._config.mappings.ksef_enabled and invoice_data.customer.nip:
