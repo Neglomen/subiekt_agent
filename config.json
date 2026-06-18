@@ -1,5 +1,7 @@
 {
   "ksef_enabled": true,
+  "fiscalization_enabled": true,
+  "fiscal_printer_id": 3,
   "payment_type_mappings": {
     "ONLINE": "PayU",
     "CASH_ON_DELIVERY": "Za pobraniem ROHLIG SUUS"
