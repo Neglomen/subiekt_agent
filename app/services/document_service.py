@@ -365,7 +365,7 @@ class DocumentService:
                     dok_do_druku = None
                     try:
                         logger.debug(f"Rozpoczynam próbę fiskalizacji na drukarce o ID: {fiscal_id}")
-                        dok_do_druku = self._sfera.o_subiekt.SuDokumentyManager.Wczytaj(doc_id)
+                        dok_do_druku = self._sfera.o_subiekt.SuDokumentyManager.Wczytaj(utworzony_numer)
                         dok_do_druku.RejestrujNaUF = True
                         dok_do_druku.DrukarkaFiskalnaId = fiscal_id
                         # Wywołanie wydruku bez pokazywania okna dialogowego
