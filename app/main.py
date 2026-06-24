@@ -20,7 +20,7 @@ from app.schemas import (
     PaymentFormRead, ProductSearchResponse, SalesInvoiceCreateRequest, SalesInvoiceCreateResponse,
     InvoiceCreateRequest, InvoiceCreateResponse,
     InvoiceCheckRequest, InvoiceCheckResponse,
-    StatusResponse
+    StatusResponse, BulkComponentsRequest, BulkComponentsResponse
 )
 from app.exceptions import InvoiceNotFoundError, OutOfStockValidationError
 
@@ -203,3 +203,22 @@ async def set_all_mappings(mappings: AllMappingsRead):
         return mappings
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Błąd zapisu konfiguracji: {e}")
+
+@app.post(
+    "/products/components/bulk",
+    response_model=BulkComponentsResponse,
+    tags=["Products"],
+    dependencies=[Depends(get_api_key)],
+    summary="Masowe pobieranie składników kompletów",
+    description="Zwraca składniki wraz z ilościami dla podanej listy symboli kompletów."
+)
+async def get_bulk_components(request: BulkComponentsRequest):
+    try:
+        def task_to_run():
+            repo = ProductRepository(sfera_worker._sfera)
+            return repo.get_bulk_components(request.symbols)
+
+        components = await sfera_worker.submit_task(task_to_run)
+        return BulkComponentsResponse(components=components)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Wewnętrzny błąd agenta: {e}")

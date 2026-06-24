@@ -331,12 +331,74 @@ class DocumentService:
             logger.debug("ETAP 4: Dodawanie pozycji do dokumentu.")
             for i, item in enumerate(invoice_data.line_items):
                 details = product_details_map[i]
-                pozycja = nowa_fs.Pozycje.Dodaj(details["id"])
-                
-                pozycja.IloscJm = float(item.quantity)
-                # Używamy ceny PRZED rabatem, aby dać Subiektowi kontrolę
-                pozycja.CenaBruttoPrzedRabatem = float(item.gross_price)
-                logger.debug(f" -> Dodano pozycję {i} (ID: {details['id']}, Typ: {details['type']}, Cena Brutto: {item.gross_price})")
+
+                # Komplety (tw_Rodzaj = 8) rozkładamy na składniki,
+                # bo Subiekt GT blokuje zapis FS gdy fizyczny stan kompletu = 0.
+                if details.get("type") == 8:
+                    logger.info(
+                        f" -> Pozycja {i} to komplet (ID: {details['id']}). "
+                        "Rozkładam na składniki."
+                    )
+                    components = self._product_repo.get_bundle_components(details["id"])
+                    if not components:
+                        raise InvoiceNotFoundError(
+                            f"Komplet o ID={details['id']} nie ma zdefiniowanych składników w tw_Komplet. "
+                            "Nie można rozłożyć kompletu na pozycje FS."
+                        )
+                    bundle_qty = float(item.quantity)
+                    # Cena brutto kompletu dzielona proporcjonalnie na składniki na podstawie ich cen katalogowych
+                    price_level = 1
+                    try:
+                        doc_price_level = int(nowa_fs.PoziomCenyId)
+                        if 1 <= doc_price_level <= 10:
+                            price_level = doc_price_level
+                    except Exception as pe:
+                        logger.debug(f"Nie udało się pobrać PoziomCenyId z dokumentu: {pe}. Używam domyślnego poziomu 1.")
+
+                    def get_base_price(c, level):
+                        # Pobieranie ceny z wybranego poziomu, z hierarchią fallbacków
+                        p = c["price_brutto"].get(level, 0.0)
+                        if p > 0:
+                            return p
+                        p = c["price_brutto"].get(1, 0.0)
+                        if p > 0:
+                            return p
+                        for lvl in sorted(c["price_brutto"].keys()):
+                            p_val = c["price_brutto"][lvl]
+                            if p_val > 0:
+                                return p_val
+                        return 1.0
+
+                    total_catalog_price = sum(get_base_price(comp, price_level) * comp["quantity"] for comp in components)
+                    target_total_gross = round(float(item.gross_price) * bundle_qty, 2)
+                    
+                    sum_assigned_values = 0.0
+                    for idx, comp in enumerate(components):
+                        comp_qty = comp["quantity"] * bundle_qty
+                        
+                        if idx == len(components) - 1:
+                            item_gross_value = round(target_total_gross - sum_assigned_values, 2)
+                        else:
+                            share = (get_base_price(comp, price_level) * comp["quantity"]) / total_catalog_price
+                            item_gross_value = round(share * target_total_gross, 2)
+                            sum_assigned_values += item_gross_value
+                        
+                        comp_unit_price = round(item_gross_value / comp_qty, 4) if comp_qty > 0 else 0.0
+
+                        pozycja = nowa_fs.Pozycje.Dodaj(comp["id"])
+                        pozycja.IloscJm = comp_qty
+                        pozycja.CenaBruttoPrzedRabatem = comp_unit_price
+                        logger.debug(
+                            f"    -> Składnik: {comp['symbol']} (ID: {comp['id']}), "
+                            f"Ilość: {comp_qty}, Cena bazowa: {get_base_price(comp, price_level):.2f}, "
+                            f"Cena jednostkowa FS: {comp_unit_price:.4f}, Wartość brutto: {item_gross_value:.2f}"
+                        )
+                else:
+                    pozycja = nowa_fs.Pozycje.Dodaj(details["id"])
+                    pozycja.IloscJm = float(item.quantity)
+                    # Używamy ceny PRZED rabatem, aby dać Subiektowi kontrolę
+                    pozycja.CenaBruttoPrzedRabatem = float(item.gross_price)
+                    logger.debug(f" -> Dodano pozycję {i} (ID: {details['id']}, Typ: {details['type']}, Cena Brutto: {item.gross_price})")
 
             self._handle_payment(nowa_fs, invoice_data)
 

@@ -134,3 +134,19 @@ class BulkStockResponse(BaseModel):
             "Symbole nieznalezione w Subiekcie lub nieposiadające stanu są zwracane z wartością 0.0."
         )
     )
+
+
+# --- SCHEMATY DLA MASOWEGO POBIERANIA SKŁADNIKÓW KOMPLETÓW ---
+
+class ComponentItem(BaseModel):
+    symbol: str = Field(..., description="Symbol składnika kompletu.")
+    quantity: float = Field(..., description="Wymagana ilość składnika dla 1 kompletu.")
+
+class BulkComponentsRequest(BaseModel):
+    symbols: List[str] = Field(..., min_length=1, description="Lista symboli kompletów do pobrania.")
+
+class BulkComponentsResponse(BaseModel):
+    components: Dict[str, List[ComponentItem]] = Field(
+        ...,
+        description="Słownik mapujący symbol kompletu na listę jego składników z ilościami."
+    )

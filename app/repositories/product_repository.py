@@ -58,6 +58,84 @@ class ProductRepository(BaseRepository):
         
         return self._cache
     
+    def get_bundle_components(self, bundle_id: int) -> List[Dict[str, Any]]:
+        """
+        Zwraca listę składników kompletu dla podanego ID kompletu wraz z cennikami.
+
+        Dla każdego składnika zwraca słownik:
+            - 'id':       tw_Id składnika
+            - 'symbol':   tw_Symbol składnika
+            - 'quantity': kpl_Liczba (wymagana ilość na 1 komplet)
+            - 'type':     tw_Rodzaj składnika
+            - 'price_brutto': słownik {level_id: cena_brutto} (poziomy cen 1-10)
+            - 'price_netto':  słownik {level_id: cena_netto} (poziomy cen 1-10)
+
+        Args:
+            bundle_id: tw_Id kompletu (tw_Rodzaj = 8).
+
+        Returns:
+            Lista słowników opisujących składniki, lub pusta lista jeśli brak.
+        """
+        sql_query = f"""
+            SELECT
+                k.kpl_Liczba  AS quantity,
+                t.tw_Id       AS id,
+                t.tw_Symbol   AS symbol,
+                t.tw_Rodzaj   AS type,
+                ISNULL(c.tc_CenaBrutto1, 0)  AS price_brutto_1,
+                ISNULL(c.tc_CenaBrutto2, 0)  AS price_brutto_2,
+                ISNULL(c.tc_CenaBrutto3, 0)  AS price_brutto_3,
+                ISNULL(c.tc_CenaBrutto4, 0)  AS price_brutto_4,
+                ISNULL(c.tc_CenaBrutto5, 0)  AS price_brutto_5,
+                ISNULL(c.tc_CenaBrutto6, 0)  AS price_brutto_6,
+                ISNULL(c.tc_CenaBrutto7, 0)  AS price_brutto_7,
+                ISNULL(c.tc_CenaBrutto8, 0)  AS price_brutto_8,
+                ISNULL(c.tc_CenaBrutto9, 0)  AS price_brutto_9,
+                ISNULL(c.tc_CenaBrutto10, 0) AS price_brutto_10,
+                ISNULL(c.tc_CenaNetto1, 0)   AS price_netto_1,
+                ISNULL(c.tc_CenaNetto2, 0)   AS price_netto_2,
+                ISNULL(c.tc_CenaNetto3, 0)   AS price_netto_3,
+                ISNULL(c.tc_CenaNetto4, 0)   AS price_netto_4,
+                ISNULL(c.tc_CenaNetto5, 0)   AS price_netto_5,
+                ISNULL(c.tc_CenaNetto6, 0)   AS price_netto_6,
+                ISNULL(c.tc_CenaNetto7, 0)   AS price_netto_7,
+                ISNULL(c.tc_CenaNetto8, 0)   AS price_netto_8,
+                ISNULL(c.tc_CenaNetto9, 0)   AS price_netto_9,
+                ISNULL(c.tc_CenaNetto10, 0)  AS price_netto_10
+            FROM tw_Komplet k
+            INNER JOIN tw__Towar t ON k.kpl_IdSkladnik = t.tw_Id
+            LEFT JOIN tw_Cena c ON c.tc_IdTowar = t.tw_Id
+            WHERE k.kpl_IdKomplet = {int(bundle_id)}
+        """
+        ado_recordset = None
+        try:
+            ado_recordset, _ = self.ado_connection.Execute(sql_query)
+            components = []
+            while not ado_recordset.EOF:
+                price_brutto = {}
+                price_netto = {}
+                for idx in range(1, 11):
+                    price_brutto[idx] = float(ado_recordset.Fields(f"price_brutto_{idx}").Value or 0)
+                    price_netto[idx] = float(ado_recordset.Fields(f"price_netto_{idx}").Value or 0)
+
+                components.append({
+                    "id":       ado_recordset.Fields("id").Value,
+                    "symbol":   ado_recordset.Fields("symbol").Value,
+                    "quantity": float(ado_recordset.Fields("quantity").Value or 1),
+                    "type":     ado_recordset.Fields("type").Value,
+                    "price_brutto": price_brutto,
+                    "price_netto": price_netto
+                })
+                ado_recordset.MoveNext()
+            logger.debug(f"get_bundle_components: komplet ID={bundle_id} ma {len(components)} składników.")
+            return components
+        except Exception as e:
+            logger.error(f"Błąd SQL podczas pobierania składników kompletu ID={bundle_id}: {e}", exc_info=True)
+            return []
+        finally:
+            if ado_recordset and ado_recordset.State != 0:
+                ado_recordset.Close()
+
     def search(self, query: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Wyszukuje produkty w Subiekcie po symbolu lub nazwie.
@@ -97,14 +175,18 @@ class ProductRepository(BaseRepository):
         """
         Zwraca słownik {symbol: dostępna_ilość} dla podanej listy symboli towarów.
 
-        Wykonuje jedno zoptymalizowane zapytanie SQL do bazy Subiekta GT,
-        łącząc tabele tw__Towar i tw_Stan. Filtruje po tw_Typ = 1 (towary),
-        ignorując usługi, które nie mają stanów magazynowych.
-        Dostępna ilość = st_Stan - st_Rezerwacja (COALESCE chroni przed NULL,
-        gdy dany towar nie ma jeszcze rekordu w tw_Stan).
+        Wykonuje jedno zoptymalizowane zapytanie SQL (CTE) do bazy Subiekta GT.
+        Logika zależy od rodzaju kartoteki towaru (tw_Rodzaj):
 
-        Symbole nieznalezione w bazie (lub z zerowym stanem) są zwracane
-        z wartością 0.0, co upraszcza logikę po stronie backendu.
+        - Towary zwykłe (tw_Rodzaj != 8): zwraca rzeczywisty stan netto
+          = st_Stan - st_StanRez z tabeli tw_Stan dla danego magazynu.
+
+        - Komplety (tw_Rodzaj = 8): oblicza "wirtualny" dostępny stan na podstawie
+          stanów składników. Pobiera stan każdego składnika z tw_Stan, dzieli przez
+          wymaganą ilość (kpl_Liczba z tw_Komplet) i bierze minimum = maksymalna
+          liczba kompletów możliwych do złożenia z dostępnych stanów.
+
+        Symbole nieznalezione w bazie są zwracane z wartością 0.0.
 
         Args:
             symbols: Lista symboli towarów do sprawdzenia.
@@ -122,12 +204,53 @@ class ProductRepository(BaseRepository):
         symbols_sql = ", ".join(f"'{s}'" for s in sanitized)
 
         sql_query = f"""
-            SELECT tw_Symbol, COALESCE(st_Stan - st_StanRez, 0) AS dostepne
-            FROM tw__Towar
-            LEFT JOIN tw_Stan
-                ON tw_Id = st_TowId
-                AND st_MagId = {int(mag_id)}
-            WHERE tw_Symbol IN ({symbols_sql})
+            WITH ProductInfo AS (
+                SELECT 
+                    tw_Id, 
+                    tw_Symbol, 
+                    tw_Rodzaj
+                FROM tw__Towar
+                WHERE tw_Symbol IN ({symbols_sql})
+            ),
+            ComponentStocks AS (
+                SELECT 
+                    pi.tw_Symbol AS BundleSymbol,
+                    pi.tw_Id AS BundleId,
+                    comp.tw_Symbol AS ComponentSymbol,
+                    k.kpl_Liczba AS RequiredQty,
+                    ISNULL((
+                        SELECT SUM(st_Stan - st_StanRez) 
+                        FROM tw_Stan 
+                        WHERE st_TowId = k.kpl_IdSkladnik AND st_MagId = {int(mag_id)}
+                    ), 0) AS ComponentAvailableStock
+                FROM ProductInfo pi
+                INNER JOIN tw_Komplet k ON pi.tw_Id = k.kpl_IdKomplet
+                INNER JOIN tw__Towar comp ON k.kpl_IdSkladnik = comp.tw_Id
+                WHERE pi.tw_Rodzaj = 8
+            ),
+            BundleCalculatedStock AS (
+                SELECT 
+                    BundleSymbol AS Symbol,
+                    MIN(FLOOR(ComponentAvailableStock / RequiredQty)) AS CalculatedStock
+                FROM ComponentStocks
+                GROUP BY BundleSymbol
+            ),
+            StandardProductStock AS (
+                SELECT 
+                    pi.tw_Symbol AS Symbol,
+                    ISNULL((
+                        SELECT SUM(st_Stan - st_StanRez) 
+                        FROM tw_Stan 
+                        WHERE st_TowId = pi.tw_Id AND st_MagId = {int(mag_id)}
+                    ), 0) AS CalculatedStock
+                FROM ProductInfo pi
+                WHERE pi.tw_Rodzaj != 8
+            )
+            SELECT Symbol, CalculatedStock
+            FROM StandardProductStock
+            UNION ALL
+            SELECT Symbol, CalculatedStock
+            FROM BundleCalculatedStock;
         """
 
         logger.debug(
@@ -140,8 +263,8 @@ class ProductRepository(BaseRepository):
 
             result: Dict[str, float] = {}
             while not ado_recordset.EOF:
-                symbol_val = ado_recordset.Fields("tw_Symbol").Value
-                dostepne_val = ado_recordset.Fields("dostepne").Value
+                symbol_val = ado_recordset.Fields("Symbol").Value
+                dostepne_val = ado_recordset.Fields("CalculatedStock").Value
                 if symbol_val is not None:
                     result[symbol_val] = float(dostepne_val) if dostepne_val is not None else 0.0
                 ado_recordset.MoveNext()
@@ -160,6 +283,61 @@ class ProductRepository(BaseRepository):
             logger.error(f"Błąd SQL podczas pobierania stanów magazynowych bulk: {e}", exc_info=True)
             # Zwracamy puste stany dla wszystkich symboli, aby nie blokować wywołującego
             return {s: 0.0 for s in symbols}
+        finally:
+            if ado_recordset and ado_recordset.State != 0:
+                ado_recordset.Close()
+
+    def get_bulk_components(self, symbols: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Pobiera składniki kompletów dla podanej listy symboli kompletów za pomocą jednego zapytania SQL.
+
+        Args:
+            symbols: Lista symboli kompletów (rodziców).
+
+        Returns:
+            Słownik mapujący symbol kompletu na listę słowników z kluczami:
+                - 'symbol': symbol składnika
+                - 'quantity': wymagana ilość składnika
+        """
+        if not symbols:
+            return {}
+
+        sanitized = [s.replace("'", "") for s in symbols]
+        symbols_sql = ", ".join(f"'{s}'" for s in sanitized)
+
+        sql_query = f"""
+            SELECT 
+                parent.tw_Symbol AS BundleSymbol,
+                comp.tw_Symbol AS ComponentSymbol,
+                k.kpl_Liczba AS RequiredQty
+            FROM tw_Komplet k
+            INNER JOIN tw__Towar parent ON k.kpl_IdKomplet = parent.tw_Id
+            INNER JOIN tw__Towar comp ON k.kpl_IdSkladnik = comp.tw_Id
+            WHERE parent.tw_Symbol IN ({symbols_sql})
+        """
+        
+        ado_recordset = None
+        try:
+            ado_recordset, _ = self.ado_connection.Execute(sql_query)
+            result: Dict[str, List[Dict[str, Any]]] = {s: [] for s in symbols}
+            
+            while not ado_recordset.EOF:
+                bundle_sym = ado_recordset.Fields("BundleSymbol").Value
+                comp_sym = ado_recordset.Fields("ComponentSymbol").Value
+                qty = float(ado_recordset.Fields("RequiredQty").Value or 0)
+                
+                if bundle_sym in result:
+                    result[bundle_sym].append({
+                        "symbol": comp_sym,
+                        "quantity": qty
+                    })
+                ado_recordset.MoveNext()
+                
+            logger.debug(f"get_bulk_components: pobrano składniki dla {len(result)} symboli kompletów.")
+            return result
+        except Exception as e:
+            logger.error(f"Błąd SQL podczas pobierania składników kompletów bulk: {e}", exc_info=True)
+            return {s: [] for s in symbols}
         finally:
             if ado_recordset and ado_recordset.State != 0:
                 ado_recordset.Close()
