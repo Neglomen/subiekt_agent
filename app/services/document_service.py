@@ -463,7 +463,8 @@ class DocumentService:
             # Sprawdzamy, czy to błąd braku towaru w magazynie (walidacja biznesowa),
             # a nie faktyczny błąd połączenia ze Sferą.
             try:
-                com_message = e.args[2][2] if e.args and len(e.args) > 2 and e.args[2] else ""
+                raw_message = e.args[2][2] if e.args and len(e.args) > 2 and e.args[2] else None
+                com_message = raw_message or ""   # guard against None in e.args[2][2]
                 com_hresult = e.args[2][5] if e.args and len(e.args) > 2 and e.args[2] and len(e.args[2]) > 5 else None
             except (IndexError, TypeError):
                 com_message = ""
