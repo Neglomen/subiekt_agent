@@ -268,7 +268,8 @@ class DocumentService:
             raise e
         except pywintypes.com_error as e:
             try:
-                com_message = e.args[2][2] if e.args and len(e.args) > 2 and e.args[2] else ""
+                raw_message = e.args[2][2] if e.args and len(e.args) > 2 and e.args[2] else None
+                com_message = raw_message or ""   # guard against None in e.args[2][2]
             except (IndexError, TypeError):
                 com_message = ""
 
@@ -283,8 +284,9 @@ class DocumentService:
             logger.exception(f"Błąd COM podczas tworzenia {doc_type} dla nr '{invoice_data.original_invoice_number}': {error_details}")
             raise SferaConnectionError(error_details)
         except ValueError as e:
-            logger.exception(f"Błąd walidacji danych podczas tworzenia {doc_type} dla nr '{invoice_data.original_invoice_number}': {e}")
-            raise SferaConnectionError(str(e))
+            # ValueError to błąd biznesowy — NIE wyzwalamy reconnect Sfery.
+            logger.error(f"Błąd walidacji danych podczas tworzenia {doc_type} dla nr '{invoice_data.original_invoice_number}': {e}")
+            raise
         finally:
             if nowy_dok:
                 try: 
@@ -495,8 +497,9 @@ class DocumentService:
             logger.exception(f"Błąd COM podczas tworzenia FS: {error_details}")
             raise SferaConnectionError(error_details)
         except ValueError as e:
-            logger.exception(f"Błąd walidacji danych podczas tworzenia FS: {e}")
-            raise SferaConnectionError(str(e))
+            # ValueError to błąd biznesowy (np. walidacja NIP, KSeF) — NIE wyzwalamy reconnect.
+            logger.error(f"Błąd walidacji danych podczas tworzenia FS: {e}")
+            raise
         finally:
             if nowa_fs:
                 try: nowa_fs.Zamknij()
