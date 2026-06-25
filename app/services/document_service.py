@@ -464,8 +464,10 @@ class DocumentService:
             # a nie faktyczny błąd połączenia ze Sferą.
             try:
                 com_message = e.args[2][2] if e.args and len(e.args) > 2 and e.args[2] else ""
+                com_hresult = e.args[2][5] if e.args and len(e.args) > 2 and e.args[2] and len(e.args[2]) > 5 else None
             except (IndexError, TypeError):
                 com_message = ""
+                com_hresult = None
 
             if "Brak towaru w magazynie" in com_message:
                 logger.warning(
@@ -473,6 +475,19 @@ class DocumentService:
                     "Rzucam OutOfStockValidationError (bez reconnect Sfery)."
                 )
                 raise OutOfStockValidationError("Brak towaru w magazynie.")
+
+            # Błąd KSeF (np. -2147214764) lub inne błędy biznesowe Subiekta — NIE są błędem połączenia.
+            # Traktujemy jako ValueError, żeby nie wywoływać reconnectu Sfery.
+            KSEF_HRESULT = -2147214764
+            if com_hresult == KSEF_HRESULT or "e-Faktury" in com_message or "KSeF" in com_message:
+                logger.error(
+                    f"Błąd biznesowy KSeF/e-Faktura podczas zapisu FS (HRESULT={com_hresult}): "
+                    f"{com_message.strip()}. Rzucam ValueError (bez reconnect Sfery)."
+                )
+                raise ValueError(
+                    f"Błąd generowania e-Faktury (KSeF): {com_message.strip() or e.strerror}. "
+                    "Sprawdź poprawność danych kontrahenta (NIP, adres) oraz konfigurację KSeF w Subiekcie."
+                )
 
             # Inny błąd COM — faktyczny problem z połączeniem; wywołujemy reconnect.
             error_details = f"Błąd COM: {e.strerror}"
@@ -502,6 +517,19 @@ class DocumentService:
                 .replace('Ś', 'S').replace('Ź', 'Z').replace('Ż', 'Z')
             )
             return safe_name
+
+        def _sanitize_nip(raw_nip: str) -> str:
+            """Usuwa znaki niebędące cyframi z NIP-u (np. prefix 'NIP: ', myślniki, spacje)."""
+            import re
+            digits = re.sub(r'\D', '', raw_nip)
+            return digits
+
+        # Sanityzacja NIP – usuwa prefix "NIP: ", myślniki, spacje itp.
+        if customer_data.nip:
+            clean_nip = _sanitize_nip(customer_data.nip)
+            if clean_nip != customer_data.nip:
+                logger.info(f"NIP '{customer_data.nip}' znormalizowany do '{clean_nip}'.")
+            customer_data = customer_data.model_copy(update={"nip": clean_nip if clean_nip else None})
 
         if customer_data.nip:
             try:
