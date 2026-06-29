@@ -649,9 +649,24 @@ class DocumentService:
         """Ustawia płatność na dokumencie Sfery."""
         logger.debug("ETAP 5: Ustawianie formy płatności z mapowań konfiguracyjnych.")
         payment_map = self._config.mappings.payment_type_mappings
-        payment_type_name = payment_map.get(invoice_data.payment_type.upper())
-        if not payment_type_name:
-            raise ValueError(f"Brak zdefiniowanego mapowania dla typu płatności '{invoice_data.payment_type}' w pliku config.json")
+        payment_type_key = invoice_data.payment_type.upper()
+
+        # 1. Sprawdź dokładne dopasowanie klucza (np. "CASH_ON_DELIVERY:SUUS")
+        if payment_type_key in payment_map:
+            payment_type_name = payment_map[payment_type_key].strip()
+            logger.debug(f"Forma płatności: dokładne dopasowanie klucza '{payment_type_key}'.")
+        # 2. Fallback do ogólnego "CASH_ON_DELIVERY" dla nieznanych kurierów COD
+        elif payment_type_key.startswith("CASH_ON_DELIVERY") and "CASH_ON_DELIVERY" in payment_map:
+            payment_type_name = payment_map["CASH_ON_DELIVERY"].strip()
+            logger.warning(
+                f"Brak specyficznego mapowania dla '{payment_type_key}'. "
+                f"Używam fallbacku 'CASH_ON_DELIVERY' -> '{payment_type_name}'."
+            )
+        else:
+            raise ValueError(
+                f"Brak zdefiniowanego mapowania dla typu płatności '{invoice_data.payment_type}' w pliku config.json. "
+                f"Dostępne klucze: {list(payment_map.keys())}"
+            )
         
         all_payment_forms = self._get_payment_forms_map()
         payment_form_details = all_payment_forms.get(payment_type_name.upper())
@@ -661,12 +676,20 @@ class DocumentService:
         payment_form_id = payment_form_details["id"]
         payment_form_type = payment_form_details["type"]
         
-        logger.info(f"Używam formy płatności '{payment_type_name}' o ID: {payment_form_id}, Typ: {payment_form_type}.")
+        # Sprawdzamy czy forma płatności istnieje w słowniku kart płatniczych Subiekta
+        is_karta = False
+        try:
+            is_karta = self._sfera.o_subiekt.Slowniki.FormyPlatnosciKarta.Istnieje(payment_type_name)
+        except Exception as e:
+            logger.warning(f"Błąd podczas sprawdzania słownika kart płatniczych Subiekta dla '{payment_type_name}': {e}")
+            is_karta = (payment_form_type == 1)
+
+        logger.info(f"Używam formy płatności '{payment_type_name}' o ID: {payment_form_id}, Typ: {payment_form_type}, Czy karta/pobranie: {is_karta}.")
         
         document_obj.Przelicz()
         kwota_do_zaplaty = document_obj.KwotaDoZaplaty
 
-        if payment_form_type == 1:
+        if is_karta:
             document_obj.PlatnoscKartaId = payment_form_id
             document_obj.PlatnoscKartaKwota = kwota_do_zaplaty
         else:
@@ -690,10 +713,16 @@ class DocumentService:
             while not ado_recordset.EOF:
                 nazwa = ado_recordset.Fields("fp_Nazwa").Value
                 if nazwa:
-                    forms_map[nazwa.upper()] = {
+                    nazwa_stripped = nazwa.strip()
+                    forms_map[nazwa_stripped.upper()] = {
                         "id": ado_recordset.Fields("fp_Id").Value,
                         "type": ado_recordset.Fields("fp_Typ").Value
                     }
+                    if nazwa_stripped != nazwa:
+                        logger.debug(
+                            f"Forma platnosci ID={ado_recordset.Fields('fp_Id').Value}: "
+                            f"usunieto biale znaki z nazwy: {repr(nazwa)} -> {repr(nazwa_stripped)}"
+                        )
                 ado_recordset.MoveNext()
             
             logger.info(f"Załadowano {len(forms_map)} form płatności.")
