@@ -3,8 +3,13 @@
   "fiscalization_enabled": true,
   "fiscal_printer_id": 3,
   "payment_type_mappings": {
-    "ONLINE": "PayU",
-    "CASH_ON_DELIVERY": "Za pobraniem ROHLIG SUUS"
+    "ONLINE": "Allegro Delivery",
+    "CASH_ON_DELIVERY": "Pobranie Kurier APACZKA",
+    "CASH_ON_DELIVERY:INPOST": "Pobranie kurier InPost",
+    "CASH_ON_DELIVERY:SUUS": "Pobranie Kurier SUUS",
+    "CASH_ON_DELIVERY:DHL": "Pobranie kurier DHL",
+    "CASH_ON_DELIVERY:DPD": "Pobranie Kurier DPD",
+    "CASH_ON_DELIVERY:ONE": "Pobranie kurier ONE"
   },
   "service_mappings": {
     "delivery_prepaid": "WYSYŁKA KURIERSKA",

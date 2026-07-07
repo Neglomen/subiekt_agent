@@ -10,8 +10,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
+import sys
+
 # Ścieżka bazowa projektu (subiekt_agent/)
-BASE_DIR = Path(__file__).resolve().parent.parent
+if getattr(sys, 'frozen', False):
+    # W wersji skompilowanej .exe pliki .env i config.json znajdują się w tym samym folderze co .exe
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent
 
 class SferaSettings(BaseSettings):
     """Konfiguracja połączenia ze Sferą wczytywana z .env."""
@@ -20,6 +26,13 @@ class SferaSettings(BaseSettings):
     sfera_operator: str = "Szef"
     sfera_operator_password: str = ""
     agent_api_key: str = "SECRET_API_KEY_PLACEHOLDER"
+    
+    # Ustawienia GUI i Tunelu Cloudflare
+    cloudflare_enabled: bool = False
+    cloudflare_token: str = ""
+    cloudflare_custom_url: str = ""
+    agent_port: int = 8000
+    autostart_enabled: bool = False
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
@@ -70,3 +83,31 @@ def load_config() -> AppConfig:
 
 # Globalna instancja konfiguracji dostępna w całej aplikacji
 settings = load_config()
+
+def save_sfera_settings(sfera_settings: SferaSettings):
+    """Zapisuje SferaSettings do pliku .env i aktualizuje globalną konfigurację."""
+    env_path = BASE_DIR / ".env"
+    lines = [
+        "# Sekrety i konfiguracja środowiskowa\n",
+        f"DB_SERVER_NAME={json.dumps(sfera_settings.db_server_name)}\n",
+        f"DB_NAME={json.dumps(sfera_settings.db_name)}\n",
+        f"SFERA_OPERATOR={json.dumps(sfera_settings.sfera_operator)}\n",
+        f"SFERA_OPERATOR_PASSWORD={json.dumps(sfera_settings.sfera_operator_password)}\n",
+        f"AGENT_API_KEY={json.dumps(sfera_settings.agent_api_key)}\n",
+        f"CLOUDFLARE_ENABLED={str(sfera_settings.cloudflare_enabled).upper()}\n",
+        f"CLOUDFLARE_TOKEN={json.dumps(sfera_settings.cloudflare_token)}\n",
+        f"CLOUDFLARE_CUSTOM_URL={json.dumps(sfera_settings.cloudflare_custom_url)}\n",
+        f"AGENT_PORT={sfera_settings.agent_port}\n",
+        f"AUTOSTART_ENABLED={str(sfera_settings.autostart_enabled).upper()}\n",
+    ]
+    try:
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        
+        # Odśwież globalny settings
+        global settings
+        settings = load_config()
+        logger.info("Zapisano ustawienia .env i odświeżono konfigurację w pamięci.")
+    except Exception as e:
+        logger.error(f"Nie udało się zapisać pliku .env: {e}")
+        raise

@@ -563,9 +563,14 @@ class DocumentService:
 
         # Finalne zabezpieczenie przed przekroczeniem limitu 20 znaków Subiekta
         nowy_kh.Symbol = symbol[:20]
-        
-        nowy_kh.Nazwa = customer_data.name
-        nowy_kh.NazwaPelna = customer_data.name
+
+        # Subiekt GT ma limit 50 znaków dla pola Nazwa i 200 dla NazwaPelna
+        nazwa = customer_data.name
+        if len(nazwa) > 50:
+            logger.warning(f"Nazwa kontrahenta '{nazwa}' przekracza 50 znaków (ma {len(nazwa)}). Zostanie przycięta do 50 znaków.")
+            nazwa = nazwa[:50]
+        nowy_kh.Nazwa = nazwa
+        nowy_kh.NazwaPelna = customer_data.name[:200]
         nowy_kh.NIP = customer_data.nip or ""
         street_parts = customer_data.street.rsplit(' ', 1)
         nowy_kh.Ulica = street_parts[0]
