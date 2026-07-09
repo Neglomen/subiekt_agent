@@ -34,6 +34,11 @@ class SferaSettings(BaseSettings):
     agent_port: int = 8000
     autostart_enabled: bool = False
 
+    # Ustawienia tunelu ngrok (alternatywa dla Cloudflare)
+    ngrok_enabled: bool = False
+    ngrok_authtoken: str = ""
+    ngrok_domain: str = ""
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
         env_file_encoding='utf-8',
@@ -99,6 +104,9 @@ def save_sfera_settings(sfera_settings: SferaSettings):
         f"CLOUDFLARE_CUSTOM_URL={json.dumps(sfera_settings.cloudflare_custom_url)}\n",
         f"AGENT_PORT={sfera_settings.agent_port}\n",
         f"AUTOSTART_ENABLED={str(sfera_settings.autostart_enabled).upper()}\n",
+        f"NGROK_ENABLED={str(sfera_settings.ngrok_enabled).upper()}\n",
+        f"NGROK_AUTHTOKEN={json.dumps(sfera_settings.ngrok_authtoken)}\n",
+        f"NGROK_DOMAIN={json.dumps(sfera_settings.ngrok_domain)}\n",
     ]
     try:
         with open(env_path, "w", encoding="utf-8") as f:

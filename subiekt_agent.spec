@@ -16,18 +16,27 @@ else:
     if appdata_cf.exists():
         binary_datas.append((str(appdata_cf), '.'))
 
+# Szukamy ngrok.exe na maszynie dewelopera lub w AppData
+dev_ngrok_path = Path("installer") / "bin" / "ngrok.exe"
+if dev_ngrok_path.exists():
+    binary_datas.append((str(dev_ngrok_path), '.'))
+else:
+    appdata_ngrok = Path(os.getenv("APPDATA", "")) / "SuppSalesAgent" / "bin" / "ngrok.exe"
+    if appdata_ngrok.exists():
+        binary_datas.append((str(appdata_ngrok), '.'))
+
 a = Analysis(
     ['main_gui.py'],
     pathex=[],
     binaries=binary_datas,
     datas=[
         ('app/gui/assets/icon.png', 'app/gui/assets'),
+        ('app/static', 'app/static'),
         ('config.json', '.'),
     ],
     hiddenimports=[
         'win32timezone',
-        'pystray._win32',
-        'PIL._tkinter_finder'
+        'pystray._win32'
     ],
     hookspath=[],
     hooksconfig={},
@@ -51,7 +60,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
