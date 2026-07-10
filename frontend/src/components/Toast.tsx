@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { CheckCircle, AlertCircle, X } from 'lucide-react';
 
 interface ToastProps {
@@ -15,6 +15,12 @@ export const Toast: React.FC<ToastProps> = ({
   duration = 4000,
 }) => {
   const [progress, setProgress] = useState(100);
+  const onCloseRef = useRef(onClose);
+
+  // Keep ref up-to-date with latest onClose callback
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     const startTime = Date.now();
@@ -25,12 +31,12 @@ export const Toast: React.FC<ToastProps> = ({
       
       if (elapsed >= duration) {
         clearInterval(interval);
-        onClose();
+        onCloseRef.current();
       }
     }, 16);
 
     return () => clearInterval(interval);
-  }, [duration, onClose]);
+  }, [duration]);
 
   return (
     <div className="relative overflow-hidden min-w-[300px] max-w-[400px] bg-slate-950/80 backdrop-blur-xl border border-white/10 rounded-xl p-4 shadow-2xl flex items-start gap-3 animate-slideIn">
