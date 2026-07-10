@@ -318,6 +318,8 @@ class DocumentService:
             
             if invoice_data.original_order_number:
                 nowa_fs.Uwagi = str(invoice_data.original_order_number)
+                # Zapisujemy również jako NumerOryginalny dla szybkiego wyszukiwania SQL
+                nowa_fs.NumerOryginalny = safe_original_number
             
             nowa_fs.LiczonyOdCenBrutto = True
             logger.debug(" -> Ustawiono dane nagłówka (Kontrahent, Numery, Daty, Liczenie od brutto).")
@@ -410,7 +412,7 @@ class DocumentService:
             try:
                 doc_id = nowa_fs.Id
                 # Wymuszamy odczyt z bazy danych, ponieważ obiekt COM czasem zwraca domyślną nazwę dokumentu po zapisie
-                sql = f"SELECT dok_NrPelny FROM dok__Dokument WHERE dok_Id = {doc_id}"
+                sql = f"SELECT dok_NrPelny FROM dok__Dokument WITH (NOLOCK) WHERE dok_Id = {doc_id}"
                 rs, _ = self._doc_repo.ado_connection.Execute(sql)
                 if not rs.EOF:
                     utworzony_numer = rs.Fields("dok_NrPelny").Value
@@ -748,7 +750,7 @@ class DocumentService:
         try:
             ado_connection = self._sfera.ado_connection
             # Znajdź ID dokumentu po jego pełnym numerze
-            sql_find = f"SELECT dok_Id FROM dok__Dokument WHERE dok_NrPelny = '{doc_number}'"
+            sql_find = f"SELECT dok_Id FROM dok__Dokument WITH (NOLOCK) WHERE dok_NrPelny = '{doc_number}'"
             ado_recordset, _ = ado_connection.Execute(sql_find)
 
             if ado_recordset.EOF:

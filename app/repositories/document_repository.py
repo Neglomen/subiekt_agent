@@ -22,10 +22,12 @@ class DocumentRepository(BaseRepository):
         try:
             # Zabezpieczenie przed SQL Injection
             safe_number = original_invoice_number.replace("'", "''")
+
+            # 1. Szybka ścieżka (indeksowana): Szukamy w dok_NrPelnyOryg
             sql_query = f"""
                 SELECT dok_Id, dok_NrPelny, dok_WartBrutto 
                 FROM dok__Dokument 
-                WHERE dok_NrPelnyOryg = '{safe_number}' OR CAST(dok_Uwagi AS VARCHAR(MAX)) LIKE '%{safe_number}%'
+                WHERE dok_NrPelnyOryg = '{safe_number}'
             """
             ado_recordset, _ = self.ado_connection.Execute(sql_query)
             
@@ -37,6 +39,28 @@ class DocumentRepository(BaseRepository):
                     "total_gross": Decimal(str(ado_recordset.Fields("dok_WartBrutto").Value))
                 })
                 ado_recordset.MoveNext()
+            
+            ado_recordset.Close()
+            ado_recordset = None
+
+            # 2. Wolniejsza ścieżka (fallback dla starych zamówień w Uwagi)
+            # Ograniczamy do ostatnich 90 dni dla wydajności (unika pełnego skanowania tabeli)
+            if not results:
+                sql_query_fallback = f"""
+                    SELECT dok_Id, dok_NrPelny, dok_WartBrutto 
+                    FROM dok__Dokument 
+                    WHERE dok_Uwagi LIKE '%{safe_number}%' 
+                      AND dok_DataWyst >= GETDATE() - 90
+                """
+                ado_recordset, _ = self.ado_connection.Execute(sql_query_fallback)
+                while not ado_recordset.EOF:
+                    results.append({
+                        "doc_id": ado_recordset.Fields("dok_Id").Value,
+                        "doc_number": ado_recordset.Fields("dok_NrPelny").Value,
+                        "total_gross": Decimal(str(ado_recordset.Fields("dok_WartBrutto").Value))
+                    })
+                    ado_recordset.MoveNext()
+
             return results
         finally:
             if ado_recordset and ado_recordset.State != 0:
