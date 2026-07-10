@@ -143,6 +143,65 @@ class AgentManager:
         time.sleep(1)
         self.start()
 
+    def update_tunnels(self):
+        """Aktualizuje tunele (CF i ngrok) w locie, po zapisaniu konfiguracji."""
+        with self.lock:
+            if not self.is_active:
+                return
+
+            logger.info("Aktualizacja tuneli w tle na podstawie nowej konfiguracji...")
+            sfera = app_config.settings.sfera
+            port = sfera.agent_port
+
+            # 1. Cloudflare Tunnel
+            if sfera.cloudflare_enabled:
+                # Jeśli już działa, zatrzymujemy go tylko jeśli zmieniono token lub custom_url
+                # Aby uniknąć restartowania niepotrzebnie, ale najprościej jest zrestartować go
+                if self.cloudflare_manager:
+                    logger.info("Restartowanie istniejącego tunelu Cloudflare...")
+                    try:
+                        self.cloudflare_manager.stop()
+                    except Exception as e:
+                        logger.error(f"Błąd zatrzymywania CF: {e}")
+                self.cloudflare_manager = CloudflareManager(
+                    port=port,
+                    token=sfera.cloudflare_token or None,
+                    custom_url=sfera.cloudflare_custom_url or None
+                )
+                self.cloudflare_manager.start()
+            else:
+                if self.cloudflare_manager:
+                    logger.info("Wyłączanie tunelu Cloudflare...")
+                    try:
+                        self.cloudflare_manager.stop()
+                    except Exception as e:
+                        logger.error(f"Błąd zatrzymywania CF: {e}")
+                    self.cloudflare_manager = None
+
+            # 2. ngrok Tunnel
+            if sfera.ngrok_enabled:
+                if self.ngrok_manager:
+                    logger.info("Restartowanie istniejącego tunelu ngrok...")
+                    try:
+                        self.ngrok_manager.stop()
+                    except Exception as e:
+                        logger.error(f"Błąd zatrzymywania ngrok: {e}")
+                self.ngrok_manager = NgrokManager(
+                    port=port,
+                    authtoken=sfera.ngrok_authtoken or "",
+                    domain=sfera.ngrok_domain or "",
+                )
+                self.ngrok_manager.start()
+            else:
+                if self.ngrok_manager:
+                    logger.info("Wyłączanie tunelu ngrok...")
+                    try:
+                        self.ngrok_manager.stop()
+                    except Exception as e:
+                        logger.error(f"Błąd zatrzymywania ngrok: {e}")
+                    self.ngrok_manager = None
+
+
 
 class TrayApp:
     def __init__(self):

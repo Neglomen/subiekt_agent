@@ -351,6 +351,14 @@ async def gui_save_config(payload: GUIConfigPayload):
         mapping.distributed_costs_keywords = payload.distributed_costs_keywords
         config_svc.save_config(mapping)
 
+        # 3. Update tunnels dynamically if tray app is running
+        try:
+            from app.gui.tray import _tray_instance
+            if _tray_instance:
+                _tray_instance.agent_manager.update_tunnels()
+        except Exception as e:
+            logger.error(f"Nie udało się zaktualizować tuneli w locie: {e}")
+
         return {"status": "ok", "message": "Konfiguracja zapisana i zaktualizowana w pamięci."}
     except Exception as e:
         logger.error(f"Błąd zapisu konfiguracji GUI: {e}", exc_info=True)
