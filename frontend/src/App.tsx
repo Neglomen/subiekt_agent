@@ -6,7 +6,9 @@ import {
   BookOpen, 
   RefreshCw,
   Server,
-  Activity
+  Activity,
+  Copy,
+  Check
 } from 'lucide-react';
 import { ConnectorFlow } from './components/ConnectorFlow';
 import { StatusGrid } from './components/StatusGrid';
@@ -70,6 +72,7 @@ export default function App() {
   // System control states
   const [restarting, setRestarting] = useState(false);
   const [toasts, setToasts] = useState<{ id: string; type: 'success' | 'error'; message: string }[]>([]);
+  const [copied, setCopied] = useState(false);
   
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -80,6 +83,13 @@ export default function App() {
 
   const removeToast = (id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const handleCopyUrl = (url: string) => {
+    navigator.clipboard.writeText(url);
+    setCopied(true);
+    addToast('success', 'Skopiowano adres publiczny tunelu do schowka!');
+    setTimeout(() => setCopied(false), 2000);
   };
 
   // --- API FETCHES ---
@@ -441,6 +451,33 @@ export default function App() {
           {activeSection === 'dashboard' && (
             <div className="animate-fadeIn">
               <ConnectorFlow sferaConnected={sferaConnected} cfConnected={cfConnected} ngrokConnected={ngrokConnected} ngrokUrl={ngrokUrl} />
+              
+              {/* Prominent Tunnel URL alert with Copy button */}
+              {(cfConnected || ngrokConnected) && (
+                <div className="bg-gradient-to-r from-violet-500/10 via-purple-500/10 to-pink-500/10 border border-white/10 rounded-2xl p-5 mb-8 flex flex-col sm:flex-row justify-between items-center gap-4 backdrop-blur-xl relative overflow-hidden group">
+                  <div className="absolute top-0 left-0 w-full h-0.5 bg-gradient-to-r from-violet-500 via-purple-400 to-pink-500"></div>
+                  <div className="flex items-center gap-4 w-full">
+                    <div className="w-10 h-10 rounded-xl bg-violet-500/20 flex items-center justify-center text-violet-400 shrink-0">
+                      <Activity className="w-5 h-5 animate-pulse" />
+                    </div>
+                    <div className="overflow-hidden w-full">
+                      <h4 className="text-[10px] font-bold text-text-muted uppercase tracking-wider">Publiczny adres tunelu HTTP (dla SuppSales)</h4>
+                      <p className="text-sm font-extrabold text-text-main mt-0.5 font-mono select-all truncate">
+                        {cfConnected ? cfUrl : ngrokUrl}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyUrl(cfConnected ? cfUrl : ngrokUrl)}
+                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-primary hover:bg-violet-600 text-white text-xs font-bold tracking-wider uppercase transition-all duration-300 flex items-center justify-center gap-2 hover:scale-[1.02] cursor-pointer shadow-lg shadow-violet-500/20 shrink-0"
+                  >
+                    {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                    {copied ? 'Skopiowano!' : 'Kopiuj adres'}
+                  </button>
+                </div>
+              )}
+
               <StatusGrid 
                 sferaConnected={sferaConnected} 
                 cfConnected={cfConnected} 
