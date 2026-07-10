@@ -121,12 +121,12 @@ class CloudflareManager:
                 self._stop_event.wait(30)
                 continue
                 
-            cmd = []
             if self.token:
                 # Named Tunnel z tokenem
                 cmd = [str(self.bin_path), "tunnel", "--no-autoupdate", "run", "--token", self.token]
                 self.public_url = self.custom_url or "Konfiguracja CF (własna domena)"
                 logger.info("Uruchamianie własnego tunelu Cloudflare (z tokenem)...")
+            else:
                 # Quick Tunnel (trycloudflare.com)
                 cmd = [str(self.bin_path), "tunnel", "--url", f"http://127.0.0.1:{self.port}"]
                 self.public_url = None
