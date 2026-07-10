@@ -1,6 +1,7 @@
 """
 app/gui/webview_window.py
 Zarządza natywnym oknem pywebview z wbudowanym dashboardem.
+Exposes JS API for custom window controls.
 """
 import threading
 import logging
@@ -10,6 +11,30 @@ logger = logging.getLogger(__name__)
 
 _window = None
 _webview_started = threading.Event()
+
+
+class WindowAPI:
+    """API wystawione dla JavaScript (window.pywebview.api) do sterowania oknem."""
+    def minimize(self):
+        global _window
+        if _window:
+            logger.info("JS API: minimalizacja okna")
+            _window.minimize()
+
+    def maximize(self):
+        global _window
+        if _window:
+            logger.info("JS API: maksymalizacja okna")
+            if _window.maximized:
+                _window.restore()
+            else:
+                _window.maximize()
+
+    def close(self):
+        global _window
+        if _window:
+            logger.info("JS API: ukrywanie okna (zamknięcie)")
+            _window.hide()
 
 
 def start(url: str):
@@ -22,6 +47,9 @@ def start(url: str):
 
     import webview
 
+    # Tworzymy instancję API do sterowania oknem z poziomu HTML/JS
+    api_instance = WindowAPI()
+
     _window = webview.create_window(
         title="SuppSales Agent",
         url=url,
@@ -32,6 +60,8 @@ def start(url: str):
         hidden=True,            # startuje ukryte, shown po załadowaniu strony
         confirm_close=False,    # X chowa okno zamiast zamykać (obsługiwane przez _on_closing)
         background_color="#0f172a",
+        frameless=True,         # Nowoczesne okno bez natywnego obramowania systemu Windows
+        js_api=api_instance
     )
 
     def _on_loaded():
@@ -43,13 +73,13 @@ def start(url: str):
 
     def _on_closing():
         """
-        Wywoływane gdy użytkownik kliknie X — chowamy okno zamiast zamykać aplikację.
-        Zwraca False aby anulować zamknięcie.
+        Wywoływane gdy użytkownik próbuje zamknąć okno.
+        Chowamy okno zamiast zamykać aplikację.
         """
-        logger.info("pywebview: przycisk X — chowam okno.")
+        logger.info("pywebview: zamykanie okna -> chowam.")
         if _window:
             _window.hide()
-        return False  # WAŻNE: False = anuluj zamknięcie okna
+        return False  # False = anuluj zamknięcie okna
 
     _window.events.loaded += _on_loaded
     _window.events.closing += _on_closing

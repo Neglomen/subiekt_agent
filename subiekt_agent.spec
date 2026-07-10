@@ -62,7 +62,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='SuppSalesAgentAppV6',
+    name='SuppSalesAgentAppV7',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -84,5 +84,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='SuppSalesAgentAppV6',
+    name='SuppSalesAgentAppV7',
 )

@@ -282,17 +282,61 @@ export default function App() {
   }, []);
 
   return (
-    <div className="flex min-h-screen relative overflow-hidden bg-slate-950">
+    <div className="flex flex-col h-screen overflow-hidden bg-slate-950 relative">
       
       {/* Decorative background blurs */}
-      <div className="absolute top-10 left-10 w-[500px] h-[500px] bg-primary/5 blur-[150px] rounded-full pointer-events-none"></div>
-      <div className="absolute bottom-10 right-10 w-[500px] h-[500px] bg-purple-500/5 blur-[150px] rounded-full pointer-events-none"></div>
+      <div className="absolute top-10 left-10 w-[500px] h-[500px] bg-primary/5 blur-[150px] rounded-full pointer-events-none z-0"></div>
+      <div className="absolute bottom-10 right-10 w-[500px] h-[500px] bg-purple-500/5 blur-[150px] rounded-full pointer-events-none z-0"></div>
       
       {/* Premium Grid Pattern overlay */}
-      <div className="absolute inset-0 bg-grid-premium opacity-60 pointer-events-none"></div>
+      <div className="absolute inset-0 bg-grid-premium opacity-60 pointer-events-none z-0"></div>
 
-      {/* --- SIDEBAR --- */}
-      <aside className="w-72 bg-slate-900/40 border-r border-white/5 backdrop-blur-xl shrink-0 flex flex-col justify-between p-6 z-20 relative">
+      {/* --- CUSTOM APP TITLE BAR (Frameless Window Drag Region) --- */}
+      <header className="h-10 bg-slate-950/80 border-b border-white/5 flex items-center justify-between px-4 z-40 select-none pywebview-drag-region shrink-0">
+        {/* Left Side: App branding */}
+        <div className="flex items-center gap-2 pointer-events-none">
+          <div className="w-2 h-2 rounded-full bg-gradient-to-tr from-purple-500 to-pink-500 animate-pulse"></div>
+          <span className="text-[10px] font-mono font-bold tracking-wider text-text-muted">SUPPSALES AGENT CONTROL PANEL</span>
+        </div>
+        
+        {/* Right Side: Window Control Buttons */}
+        <div className="flex items-center gap-1.5 z-50">
+          <button 
+            onClick={() => (window as any).pywebview?.api?.minimize()} 
+            title="Minimalizuj"
+            className="p-1 rounded hover:bg-white/10 text-text-muted hover:text-text-main transition-colors cursor-pointer"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          </button>
+          <button 
+            onClick={() => (window as any).pywebview?.api?.maximize()} 
+            title="Maksymalizuj"
+            className="p-1 rounded hover:bg-white/10 text-text-muted hover:text-text-main transition-colors cursor-pointer"
+          >
+            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+            </svg>
+          </button>
+          <button 
+            onClick={() => (window as any).pywebview?.api?.close()} 
+            title="Ukryj w zasobniku"
+            className="p-1 rounded hover:bg-red-500/20 text-text-muted hover:text-red-400 transition-colors cursor-pointer"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      {/* --- APP WORKSPACE --- */}
+      <div className="flex flex-1 overflow-hidden z-10">
+        
+        {/* --- SIDEBAR --- */}
+        <aside className="w-72 bg-slate-900/40 border-r border-white/5 backdrop-blur-xl shrink-0 flex flex-col justify-between p-6 relative">
         <div className="space-y-8">
           
           {/* Brand Logo Header */}
@@ -400,7 +444,7 @@ export default function App() {
       </aside>
 
       {/* --- MAIN CONTENT PANEL --- */}
-      <main className="flex-1 min-h-screen overflow-y-auto p-8 z-10 relative flex flex-col justify-between">
+      <main className="flex-1 h-full overflow-y-auto p-8 z-10 relative flex flex-col justify-between">
         
         <div>
           {/* Header Bar */}
@@ -521,6 +565,8 @@ export default function App() {
         </footer>
 
       </main>
+
+      </div> {/* Close App Workspace */}
 
       {/* Render Toast Notifications */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3">
