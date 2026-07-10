@@ -32,7 +32,7 @@ class UvicornServerThread(threading.Thread):
             self.app,
             host=self.host,
             port=self.port,
-            log_level="info",
+            log_config=None,   # wyłącz własny log_config uvicorn (korzystamy z BroadcastLogHandler)
             loop="asyncio"
         )
         self.server = uvicorn.Server(config)
