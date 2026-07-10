@@ -71,22 +71,12 @@ else:
     STATIC_DIR = app_config.BASE_DIR / "app" / "static"
 
 def _serve_frontend():
-    """Mount React SPA if the build exists. Serve index.html for all unmatched routes."""
+    """Mount React SPA assets and index.html root."""
     if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
         app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="static-assets")
 
         @app.get("/", response_class=HTMLResponse, include_in_schema=False)
         async def serve_spa_root():
-            return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-
-        @app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
-        async def serve_spa_catch_all(full_path: str):
-            # Don't intercept API / WS / known route prefixes
-            if any(full_path.startswith(p) for p in [
-                "gui", "ws", "sales-invoices", "invoices",
-                "products", "config", "status", "payment-forms", "docs", "openapi",
-            ]):
-                raise HTTPException(status_code=404)
             return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
 _serve_frontend()
@@ -277,3 +267,18 @@ async def get_bulk_components(request: BulkComponentsRequest):
         return BulkComponentsResponse(components=components)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Wewnętrzny błąd agenta: {e}")
+
+# --- Register catch-all wildcard route at the very end to avoid hijacking API paths ---
+def _register_catch_all():
+    if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
+        @app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
+        async def serve_spa_catch_all(full_path: str):
+            # If path matches a known prefix but wasn't handled by FastAPI, return 404
+            if any(full_path.startswith(p) for p in [
+                "gui", "ws", "sales-invoices", "invoices",
+                "products", "config", "status", "payment-forms", "docs", "openapi",
+            ]):
+                raise HTTPException(status_code=404)
+            return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+_register_catch_all()
