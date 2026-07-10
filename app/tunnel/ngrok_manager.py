@@ -150,10 +150,10 @@ class NgrokManager:
 
                 self.process = subprocess.Popen(
                     cmd,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    bufsize=1,
                     startupinfo=startupinfo,
                 )
 
