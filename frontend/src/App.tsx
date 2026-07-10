@@ -158,23 +158,28 @@ export default function App() {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        // Skip keepalive ping messages
+        if (data && typeof data === 'object' && !Array.isArray(data) && 'ping' in data) return;
         if (Array.isArray(data)) {
-          // Bulk initial backlog
+          // Bulk initial backlog — array of raw log strings
           setLogs(data);
-        } else {
-          // Single line append
+        } else if (typeof data === 'string') {
+          // Single raw log string
           setLogs((prev) => {
             const next = [...prev, data];
-            if (next.length > 1000) next.shift(); // Max 1000 logs
+            if (next.length > 1000) next.shift();
             return next;
           });
         }
       } catch {
-        setLogs((prev) => {
-          const next = [...prev, event.data];
-          if (next.length > 1000) next.shift();
-          return next;
-        });
+        // Raw unparseable data — treat as plain string log line
+        if (typeof event.data === 'string') {
+          setLogs((prev) => {
+            const next = [...prev, event.data];
+            if (next.length > 1000) next.shift();
+            return next;
+          });
+        }
       }
     };
 
