@@ -36,7 +36,14 @@ a = Analysis(
     ],
     hiddenimports=[
         'win32timezone',
-        'pystray._win32'
+        'pystray._win32',
+        'webview',
+        'webview.platforms.winforms',
+        'webview.platforms.cef',
+        'clr',
+        'pythonnet',
+        'proxy',
+        'bottle',
     ],
     hookspath=[],
     hooksconfig={},
@@ -55,7 +62,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='SuppSalesAgentAppV3',
+    name='SuppSalesAgentAppV4',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -77,5 +84,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='SuppSalesAgentAppV3',
+    name='SuppSalesAgentAppV4',
 )
