@@ -135,7 +135,7 @@ class NgrokManager:
             cmd = [str(self.bin_path), "http"]
             if self.domain:
                 cmd += ["--domain", self.domain]
-            cmd += [str(self.port)]
+            cmd += [f"127.0.0.1:{self.port}"]
             # Wymuszamy format JSON w logach, żeby łatwo wyciągnąć URL
             cmd += ["--log", "stdout", "--log-format", "json", "--log-level", "info"]
 
