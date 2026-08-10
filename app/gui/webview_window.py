@@ -30,6 +30,32 @@ class WindowAPI:
             else:
                 _window.maximize()
 
+    def export_logs(self, logs_text: str) -> bool:
+        global _window
+        if not _window:
+            logger.warning("JS API: Brak obiektu okna do eksportu logów.")
+            return False
+        
+        import webview
+        from datetime import datetime
+        try:
+            default_filename = f"subiekt_agent_logs_{datetime.now().strftime('%Y-%m-%d')}.txt"
+            logger.info("JS API: Otwieranie systemowego okna dialogowego zapisu pliku logów...")
+            file_path_tuple = _window.create_file_dialog(
+                dialog_type=webview.SAVE_DIALOG,
+                save_filename=default_filename
+            )
+            
+            if file_path_tuple and len(file_path_tuple) > 0:
+                file_path = file_path_tuple[0]
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(logs_text)
+                logger.info(f"JS API: Pomyślnie zapisano logi do pliku: {file_path}")
+                return True
+        except Exception as e:
+            logger.error(f"JS API: Błąd podczas zapisywania logów do pliku: {e}")
+        return False
+
     def close(self):
         global _window
         if _window:

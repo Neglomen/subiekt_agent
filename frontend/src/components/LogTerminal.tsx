@@ -116,6 +116,21 @@ export const LogTerminal: React.FC<LogTerminalProps> = ({
 
   const exportLogs = () => {
     const text = logs.join('\n');
+    
+    // Sprawdzamy czy działamy wewnątrz pywebview i czy wystawione jest API
+    const pywebview = (window as any).pywebview;
+    if (pywebview && pywebview.api && typeof pywebview.api.exportLogs === 'function') {
+      pywebview.api.exportLogs(text).then((success: boolean) => {
+        if (!success) {
+          console.log("Anulowano zapisywanie logów lub wystąpił błąd.");
+        }
+      }).catch((err: any) => {
+        console.error("Błąd wywołania exportLogs:", err);
+      });
+      return;
+    }
+
+    // Standardowy fallback przeglądarkowy
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

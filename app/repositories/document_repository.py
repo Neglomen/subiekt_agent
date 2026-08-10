@@ -1,6 +1,6 @@
 import logging
 from decimal import Decimal
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import win32com.client
 
@@ -92,3 +92,84 @@ class DocumentRepository(BaseRepository):
         finally:
             if ado_recordset and ado_recordset.State != 0:
                 ado_recordset.Close()
+
+    def find_fz_by_number_and_nip(self, corrected_invoice_number: str, supplier_nip: str) -> List[Dict]:
+        """
+        Wyszukuje fakturę zakupową (FZ, typ 5) po jej numerze oryginalnym i NIP-ie dostawcy.
+        """
+        import re
+        clean_nip = re.sub(r'\D', '', supplier_nip)
+        if supplier_nip.upper().startswith("PL"):
+            clean_nip = re.sub(r'\D', '', supplier_nip[2:])
+            
+        safe_number = corrected_invoice_number.replace("'", "''")
+        
+        sql_query = f"""
+            SELECT d.dok_Id, d.dok_NrPelny, d.dok_WartBrutto 
+            FROM dok__Dokument d
+            JOIN kh__Kontrahent k ON d.dok_PlatnikId = k.kh_Id
+            JOIN adr__Ewid a ON a.adr_IdObiektu = k.kh_Id AND a.adr_TypAdresu = 1
+            WHERE d.dok_Typ = 1
+              AND (d.dok_NrPelnyOryg = '{safe_number}' OR d.dok_NrPelny = '{safe_number}')
+              AND REPLACE(REPLACE(a.adr_Nip, '-', ''), ' ', '') = '{clean_nip}'
+        """
+        
+        ado_recordset = None
+        results = []
+        try:
+            logger.debug(f"Wyszukiwanie FZ: {sql_query}")
+            ado_recordset, _ = self.ado_connection.Execute(sql_query)
+            while not ado_recordset.EOF:
+                results.append({
+                    "doc_id": ado_recordset.Fields("dok_Id").Value,
+                    "doc_number": ado_recordset.Fields("dok_NrPelny").Value,
+                    "total_gross": Decimal(str(ado_recordset.Fields("dok_WartBrutto").Value))
+                })
+                ado_recordset.MoveNext()
+        except Exception as e:
+            logger.error(f"Błąd podczas wyszukiwania FZ po numerze i NIP: {e}")
+        finally:
+            if ado_recordset and ado_recordset.State != 0:
+                ado_recordset.Close()
+        return results
+
+    def find_fs_by_number_or_order(self, doc_number: Optional[str], order_number: Optional[str]) -> List[Dict]:
+        """
+        Wyszukuje fakturę sprzedaży (FS, typ 2) po jej pełnym numerze lub numerze zamówienia.
+        """
+        conditions = []
+        if doc_number:
+            safe_doc_num = doc_number.replace("'", "''")
+            conditions.append(f"d.dok_NrPelny = '{safe_doc_num}'")
+        if order_number:
+            safe_order_num = order_number.replace("'", "''")
+            conditions.append(f"d.dok_NrPelnyOryg = '{safe_order_num}'")
+            conditions.append(f"d.dok_Uwagi LIKE '%{safe_order_num}%'")
+            
+        if not conditions:
+            return []
+            
+        sql_query = f"""
+            SELECT d.dok_Id, d.dok_NrPelny, d.dok_WartBrutto 
+            FROM dok__Dokument d
+            WHERE d.dok_Typ = 2 AND ({' OR '.join(conditions)})
+        """
+        
+        ado_recordset = None
+        results = []
+        try:
+            logger.debug(f"Wyszukiwanie FS: {sql_query}")
+            ado_recordset, _ = self.ado_connection.Execute(sql_query)
+            while not ado_recordset.EOF:
+                results.append({
+                    "doc_id": ado_recordset.Fields("dok_Id").Value,
+                    "doc_number": ado_recordset.Fields("dok_NrPelny").Value,
+                    "total_gross": Decimal(str(ado_recordset.Fields("dok_WartBrutto").Value))
+                })
+                ado_recordset.MoveNext()
+        except Exception as e:
+            logger.error(f"Błąd podczas wyszukiwania FS: {e}")
+        finally:
+            if ado_recordset and ado_recordset.State != 0:
+                ado_recordset.Close()
+        return results

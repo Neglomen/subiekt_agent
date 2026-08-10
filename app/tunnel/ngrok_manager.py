@@ -66,8 +66,12 @@ class NgrokManager:
                 url,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
             )
+            from app.config import settings
+            from app.utils import urlopen_with_fallback
+            ignore_ssl = getattr(settings.mappings, 'ignore_ssl_errors', False)
+
             logger.info("Pobieranie ngrok.exe z ngrok.com...")
-            with urllib.request.urlopen(req, timeout=60) as response:
+            with urlopen_with_fallback(req, ignore_ssl=ignore_ssl, timeout=60) as response:
                 data = response.read()
 
             with zipfile.ZipFile(io.BytesIO(data)) as zf:

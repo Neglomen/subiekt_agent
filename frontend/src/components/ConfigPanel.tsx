@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Eye, EyeOff, Copy, X, Save, RotateCcw } from 'lucide-react';
+import { Eye, EyeOff, Copy, X, Save, RotateCcw, AlertCircle } from 'lucide-react';
 import { Toast } from './Toast';
 
 // --- TYPES ---
@@ -23,15 +23,18 @@ export interface GUIConfig {
   fiscalization_enabled: boolean;
   fiscal_printer_id: number;
   distributed_costs_keywords: string[];
+  ignore_ssl_errors: boolean;
 }
 
 interface ConfigPanelProps {
   config: GUIConfig;
   onSave: (newConfig: GUIConfig) => Promise<boolean>;
   onReset: () => Promise<boolean>;
+  version: string;
+  onCheckUpdate: () => void;
 }
 
-export const ConfigPanel: React.FC<ConfigPanelProps> = ({ config, onSave, onReset }) => {
+export const ConfigPanel: React.FC<ConfigPanelProps> = ({ config, onSave, onReset, version, onCheckUpdate }) => {
   const [formData, setFormData] = useState<GUIConfig>({ ...config });
   const [activeTab, setActiveTab] = useState<'sfera' | 'network' | 'tunnel' | 'subiekt' | 'system'>('sfera');
   const [showApiKey, setShowApiKey] = useState(false);
@@ -39,6 +42,8 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({ config, onSave, onRese
   const [isSaving, setIsSaving] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [toasts, setToasts] = useState<{ id: string; type: 'success' | 'error'; message: string }[]>([]);
+  const [showSslConfirmModal, setShowSslConfirmModal] = useState(false);
+  const [sslConfirmText, setSslConfirmText] = useState('');
 
   useEffect(() => {
     setFormData({ ...config });
@@ -561,6 +566,65 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({ config, onSave, onRese
             <span className="text-[10px] text-text-muted block -mt-3 ml-8">
               Dodaje wpis do rejestru Windows w sekcji Autostartu użytkownika (nie wymaga uprawnień administratora).
             </span>
+
+            {/* Opcje zaawansowane / Bezpieczeństwo SSL */}
+            <div className="bg-slate-950/40 p-5 rounded-xl border border-white/5 space-y-4">
+              <div>
+                <h4 className="text-sm font-bold text-text-main flex items-center gap-2">
+                  Bezpieczeństwo SSL
+                </h4>
+                <p className="text-xs text-text-muted mt-1">
+                  Wymuś ignorowanie błędów weryfikacji certyfikatów SSL (np. w przypadku problemów z pobieraniem aktualizacji lub połączeniem przez tunele).
+                </p>
+              </div>
+
+              {formData.ignore_ssl_errors ? (
+                <div className="flex items-center justify-between bg-yellow-500/10 border border-yellow-500/20 p-4 rounded-xl">
+                  <div className="text-xs text-yellow-400">
+                    <span className="font-bold">Ostrzeżenie:</span> Ignorowanie błędów SSL jest włączone.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData(prev => ({ ...prev, ignore_ssl_errors: false }));
+                      addToast('success', 'Weryfikacja certyfikatów SSL została ponownie włączona. Zapisz konfigurację, aby zatwierdzić.');
+                    }}
+                    className="text-xs font-bold uppercase tracking-wider px-3.5 py-1.5 rounded-lg border border-yellow-500/30 hover:bg-yellow-500/10 text-yellow-400 transition-all cursor-pointer"
+                  >
+                    Wyłącz ignorowanie
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setShowSslConfirmModal(true)}
+                    className="w-full text-center text-xs font-bold uppercase tracking-wider py-2.5 rounded-xl border border-red-500/30 hover:border-red-500/50 bg-red-500/5 hover:bg-red-500/10 text-red-400 transition-all cursor-pointer"
+                  >
+                    Zignoruj błędy SSL (Niebezpieczne)
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-slate-950/40 p-5 rounded-xl border border-white/5 space-y-3">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h4 className="text-sm font-bold text-text-main">Wersja Aplikacji</h4>
+                  <p className="text-xs text-text-muted">Aktualnie zainstalowana wersja agenta.</p>
+                </div>
+                <span className="font-mono text-xs bg-white/5 px-3 py-1 rounded-lg text-white font-bold">{version}</span>
+              </div>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={onCheckUpdate}
+                  className="w-full text-center text-xs font-bold uppercase tracking-wider py-2.5 rounded-xl border border-primary/30 hover:border-primary/50 bg-primary/5 hover:bg-primary/10 text-primary transition-all cursor-pointer"
+                >
+                  Sprawdź aktualizacje
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -587,6 +651,60 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({ config, onSave, onRese
         </div>
 
       </form>
+
+      {showSslConfirmModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-md shadow-2xl p-6 space-y-4">
+            <h3 className="text-base font-bold text-red-400 flex items-center gap-2">
+              <AlertCircle className="w-5 h-5" />
+              Wyłączenie weryfikacji SSL
+            </h3>
+            <p className="text-xs text-text-muted leading-relaxed">
+              Wyłączenie weryfikacji certyfikatów SSL naraża aplikację na ataki typu Man-in-the-Middle. Złośliwy program lub napastnik w sieci lokalnej może podsłuchać dane lub podmienić pliki aktualizacji.
+            </p>
+            <p className="text-xs text-text-muted leading-relaxed font-bold">
+              Używaj tego tylko wtedy, gdy weryfikacja certyfikatów na Twoim komputerze nie działa (np. z powodu blokad sieciowych), a sieć jest w pełni zaufana.
+            </p>
+            <div className="space-y-2">
+              <label className="block text-[10px] font-bold text-text-muted tracking-wider uppercase">
+                Wpisz słowo <span className="text-white font-mono font-bold">POTWIERDZAM</span>, aby odblokować:
+              </label>
+              <input
+                type="text"
+                value={sslConfirmText}
+                onChange={(e) => setSslConfirmText(e.target.value)}
+                className="w-full bg-slate-950/60 border border-white/10 rounded-xl px-4 py-2.5 text-text-main font-mono text-sm focus:outline-none focus:border-red-500/50"
+                placeholder="POTWIERDZAM"
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSslConfirmModal(false);
+                  setSslConfirmText('');
+                }}
+                className="px-4 py-2 rounded-xl border border-white/10 text-xs font-bold uppercase tracking-wider text-text-muted hover:text-text-main transition-all cursor-pointer"
+              >
+                Anuluj
+              </button>
+              <button
+                type="button"
+                disabled={sslConfirmText !== 'POTWIERDZAM'}
+                onClick={() => {
+                  setFormData(prev => ({ ...prev, ignore_ssl_errors: true }));
+                  setShowSslConfirmModal(false);
+                  setSslConfirmText('');
+                  addToast('success', 'Włączono ignorowanie błędów certyfikacji SSL. Zapisz konfigurację, aby zatwierdzić!');
+                }}
+                className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-500 disabled:bg-white/5 disabled:text-text-muted/40 text-white text-xs font-bold uppercase tracking-wider transition-all cursor-pointer disabled:cursor-not-allowed"
+              >
+                Potwierdź
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Render Toast Notifications */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3">

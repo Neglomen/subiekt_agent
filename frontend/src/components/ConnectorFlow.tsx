@@ -6,6 +6,7 @@ interface ConnectorFlowProps {
   cfConnected: boolean;
   ngrokConnected?: boolean;
   ngrokUrl?: string;
+  version?: string;
 }
 
 export const ConnectorFlow: React.FC<ConnectorFlowProps> = ({
@@ -14,6 +15,7 @@ export const ConnectorFlow: React.FC<ConnectorFlowProps> = ({
   ngrokConnected = false,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   ngrokUrl: _ngrokUrl = '',
+  version = '0.8.0',
 }) => {
   const tunnelConnected = cfConnected || ngrokConnected;
   const tunnelLabel = cfConnected ? 'CF' : ngrokConnected ? 'ngrok' : '';
@@ -96,7 +98,7 @@ export const ConnectorFlow: React.FC<ConnectorFlowProps> = ({
             <span className="text-sm font-bold text-text-main">Subiekt</span>
             <span className="text-sm font-bold text-primary">Agent</span>
           </div>
-          <span className="text-xs text-text-muted mt-1 font-mono">v0.5.1-web</span>
+          <span className="text-xs text-text-muted mt-1 font-mono">v{version}</span>
         </div>
 
         {/* Connection Line 2 */}

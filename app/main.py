@@ -24,16 +24,46 @@ from app.schemas import (
     PaymentFormRead, ProductSearchResponse, SalesInvoiceCreateRequest, SalesInvoiceCreateResponse,
     InvoiceCreateRequest, InvoiceCreateResponse,
     InvoiceCheckRequest, InvoiceCheckResponse,
-    StatusResponse, BulkComponentsRequest, BulkComponentsResponse
+    StatusResponse, BulkComponentsRequest, BulkComponentsResponse,
+    SalesInvoiceCorrectRequest, SalesInvoiceCorrectResponse
 )
 from app.exceptions import InvoiceNotFoundError, OutOfStockValidationError
 
 # --- GUI API & WebSocket router ---
 from app.gui_api import router as gui_router, ws_router, BroadcastLogHandler, agent_stats
 
+from logging.handlers import RotatingFileHandler
+
 log_format = '%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s'
 logging.basicConfig(level=logging.DEBUG, format=log_format)
 logger = logging.getLogger(__name__)
+
+# Konfiguracja automatycznego zapisu logów do pliku
+try:
+    log_dir = app_config.BASE_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "agent.log"
+    
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=10 * 1024 * 1024,  # 10 MB
+        backupCount=5,
+        encoding="utf-8"
+    )
+    file_handler.setFormatter(logging.Formatter(log_format))
+    file_handler.setLevel(logging.DEBUG)
+    logging.getLogger().addHandler(file_handler)
+    logger.info(f"Automatyczny zapis logów do pliku włączony: {log_file}")
+except Exception as e:
+    logger.error(f"Nie udało się skonfigurować zapisu logów do pliku: {e}")
+
+# Ustawienie poziomów logowania dla zewnętrznych bibliotek, aby zapobiec pętli zwrotnej i przeciążeniu CPU
+logging.getLogger("uvicorn").setLevel(logging.INFO)
+logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.INFO)
+logging.getLogger("asyncio").setLevel(logging.INFO)
+logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
 # Install the broadcast handler so all Python logs stream to the GUI terminal
 _broadcast_handler = BroadcastLogHandler()
@@ -43,7 +73,7 @@ logging.getLogger().addHandler(_broadcast_handler)
 
 app = FastAPI(
     title="SuppSales Subiekt GT Agent",
-    version="0.5.1-web",
+    version="0.8.1",
     description="Agent do integracji platformy SuppSales z systemem InsERT Subiekt GT przez Sferę.",
     lifespan=lifespan
 )
@@ -120,6 +150,7 @@ async def create_sales_invoice(request: SalesInvoiceCreateRequest):
         raise HTTPException(status_code=500, detail=f"Wewnętrzny błąd agenta: {e}")
 
 @app.get("/sales-invoices/pdf", tags=["Sales Invoices"], dependencies=[Depends(get_api_key)])
+@app.get("/sales-corrections/pdf", tags=["Sales Corrections"], dependencies=[Depends(get_api_key)])
 async def get_sales_invoice_pdf(doc_number: str, background_tasks: BackgroundTasks):
     logger.info(f"Otrzymano żądanie pobrania PDF dla dokumentu: {doc_number}")
     try:
@@ -150,6 +181,38 @@ async def get_sales_invoice_pdf(doc_number: str, background_tasks: BackgroundTas
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Błąd podczas pobierania PDF faktury")
+        raise HTTPException(status_code=500, detail=f"Wewnętrzny błąd agenta: {e}")
+
+@app.post("/sales-invoices/correct", response_model=SalesInvoiceCorrectResponse, tags=["Sales Invoices"], dependencies=[Depends(get_api_key)])
+async def correct_sales_invoice(request: SalesInvoiceCorrectRequest):
+    logger.info(f"Otrzymano żądanie korekty FS: {request.model_dump_json(indent=2)}")
+    try:
+        def task_to_run():
+            service = create_service()
+            return service.correct_sales_invoice(request)
+
+        doc_number, correction_amount, action = await sfera_worker.submit_task(task_to_run)
+        
+        # Record stats
+        agent_stats.record_invoice(doc_number, success=True)
+        
+        if action == "existed":
+            message = f"KFS dla zamówienia '{request.original_order_number}' już istniała."
+        else:
+            message = f"Pomyślnie utworzono KFS. Numer dokumentu: {doc_number}, kwota: {correction_amount}"
+            
+        return SalesInvoiceCorrectResponse(
+            success=True,
+            subiekt_document_number=doc_number,
+            correction_amount=correction_amount,
+            action_taken=action,
+            message=message
+        )
+    except (InvoiceNotFoundError, ValueError) as e:
+        agent_stats.record_invoice("", success=False)
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        agent_stats.record_invoice("", success=False)
         raise HTTPException(status_code=500, detail=f"Wewnętrzny błąd agenta: {e}")
 
 @app.post("/invoices/check", response_model=InvoiceCheckResponse, tags=["Purchase Invoices (FZ)"], dependencies=[Depends(get_api_key)])

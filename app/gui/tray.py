@@ -3,6 +3,7 @@ import sys
 import threading
 import logging
 import time
+from pathlib import Path
 
 import pystray
 from pystray import MenuItem as item
@@ -206,7 +207,23 @@ class TrayApp:
         self.icon = None
 
     def _build_icon(self) -> Image.Image:
-        """Rysuje ikonę agenta (gradient fiolet→magenta, litera S)."""
+        """Wczytuje ikonę z plików zasobów (zarówno w PyInstaller, jak i w trybie dev)."""
+        try:
+            # Określenie ścieżki do ikony w zależności od trybu uruchomienia (frozen vs dev)
+            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+                icon_path = Path(sys._MEIPASS) / "app" / "gui" / "assets" / "icon.png"
+            else:
+                icon_path = Path(__file__).parent / "assets" / "icon.png"
+            
+            if icon_path.exists():
+                logger.info(f"Pomyślnie załadowano ikonę zasobnika z: {icon_path}")
+                return Image.open(icon_path)
+            else:
+                logger.warning(f"Plik ikony nie istnieje w ścieżce: {icon_path}")
+        except Exception as e:
+            logger.warning(f"Nie udało się wczytać ikony z pliku ({e}). Generowanie fallbacku.")
+        
+        # Fallback (dynamiczne rysowanie w razie braku pliku)
         size = 64
         img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         dc = ImageDraw.Draw(img)

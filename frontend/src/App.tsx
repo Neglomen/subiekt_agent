@@ -16,6 +16,7 @@ import { ConfigPanel, type GUIConfig } from './components/ConfigPanel';
 import { LogTerminal } from './components/LogTerminal';
 import { EndpointDoc } from './components/EndpointDoc';
 import { Toast } from './components/Toast';
+import { UpdateModal } from './components/UpdateModal';
 
 export default function App() {
   const [activeSection, setActiveSection] = useState<'dashboard' | 'config' | 'logs' | 'endpoints'>('dashboard');
@@ -26,6 +27,11 @@ export default function App() {
   const [cfUrl, setCfUrl] = useState('');
   const [ngrokConnected, setNgrokConnected] = useState(false);
   const [ngrokUrl, setNgrokUrl] = useState('');
+  const [version, setVersion] = useState('0.8.0');
+  
+  // Update states
+  const [updateInfo, setUpdateInfo] = useState<any>(null);
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
   
   // Config state
   const [config, setConfig] = useState<GUIConfig>({
@@ -45,7 +51,8 @@ export default function App() {
     ksef_enabled: false,
     fiscalization_enabled: false,
     fiscal_printer_id: 0,
-    distributed_costs_keywords: []
+    distributed_costs_keywords: [],
+    ignore_ssl_errors: false
   });
 
   // Stats state
@@ -115,6 +122,7 @@ export default function App() {
         setCfUrl(data.cf_url || '');
         setNgrokConnected(data.ngrok_connected || false);
         setNgrokUrl(data.ngrok_url || '');
+        setVersion(data.version || '0.8.0');
       }
     } catch (err) {
       console.error('Failed to fetch status', err);
@@ -246,6 +254,26 @@ export default function App() {
     }
   };
 
+  const checkUpdates = async (manual = false) => {
+    try {
+      const res = await fetch('/gui/update/check');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.is_newer) {
+          setUpdateInfo(data);
+          setShowUpdateModal(true);
+        } else if (manual) {
+          addToast('success', 'Twoja wersja aplikacji jest aktualna.');
+        }
+      }
+    } catch (err) {
+      console.error('Failed to check updates', err);
+      if (manual) {
+        addToast('error', 'Nie udało się sprawdzić aktualizacji. Spróbuj ponownie.');
+      }
+    }
+  };
+
   const handleRestartAgent = async () => {
     setRestarting(true);
     addToast('success', 'Wysłano żądanie restartu agenta. Połączenie zostanie przerwane na kilka sekund.');
@@ -268,6 +296,7 @@ export default function App() {
     fetchStatus();
     fetchStats();
     connectLogsWs();
+    checkUpdates(false);
 
     const statusInterval = setInterval(fetchStatus, 5000);
     const statsInterval = setInterval(fetchStats, 2000);
@@ -499,7 +528,7 @@ export default function App() {
           {/* Section Renderers */}
           {activeSection === 'dashboard' && (
             <div className="animate-fadeIn">
-              <ConnectorFlow sferaConnected={sferaConnected} cfConnected={cfConnected} ngrokConnected={ngrokConnected} ngrokUrl={ngrokUrl} />
+              <ConnectorFlow sferaConnected={sferaConnected} cfConnected={cfConnected} ngrokConnected={ngrokConnected} ngrokUrl={ngrokUrl} version={version} />
               
               {/* Prominent Tunnel URL alert with Copy button */}
               {(cfConnected || ngrokConnected) && (
@@ -538,7 +567,13 @@ export default function App() {
 
           {activeSection === 'config' && (
             <div className="animate-fadeIn">
-              <ConfigPanel config={config} onSave={handleSaveConfig} onReset={handleResetConfig} />
+              <ConfigPanel 
+                config={config} 
+                onSave={handleSaveConfig} 
+                onReset={handleResetConfig} 
+                version={version}
+                onCheckUpdate={() => checkUpdates(true)}
+              />
             </div>
           )}
 
@@ -559,7 +594,7 @@ export default function App() {
         <footer className="mt-12 pt-6 border-t border-white/5 flex justify-between items-center text-[10px] text-text-muted font-mono">
           <span>&copy; {new Date().getFullYear()} SuppSales. Wszystkie prawa zastrzeżone.</span>
           <div className="flex gap-4">
-            <span>Subiekt Agent HTTP v0.5.1</span>
+            <span>Subiekt Agent HTTP v{version}</span>
             <span>Uptime: {stats.last_stock_time || '00:00:00'}</span>
           </div>
         </footer>
@@ -579,6 +614,13 @@ export default function App() {
           />
         ))}
       </div>
+
+      {showUpdateModal && updateInfo && (
+        <UpdateModal
+          updateInfo={updateInfo}
+          onClose={() => setShowUpdateModal(false)}
+        />
+      )}
 
       <style>{`
         @keyframes fadeIn {

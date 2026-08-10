@@ -62,6 +62,7 @@ class MappingSettings(BaseModel):
     service_mappings: ServiceMappings = Field(default_factory=ServiceMappings)
     product_mappings: Dict[str, str] = Field(default_factory=dict)
     distributed_costs_keywords: list[str] = Field(default_factory=list)
+    ignore_ssl_errors: bool = False
 
 class AppConfig:
     """Główny obiekt konfiguracyjny, łączący wszystkie ustawienia."""

@@ -31,6 +31,7 @@ a = Analysis(
     binaries=binary_datas,
     datas=[
         ('app/gui/assets/icon.png', 'app/gui/assets'),
+        ('app/gui/assets/icon.ico', 'app/gui/assets'),
         ('app/static', 'app/static'),
         ('config.json', '.'),
     ],
@@ -62,7 +63,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='SuppSalesAgentAppV7',
+    name='SuppSalesAgentAppV12',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -73,7 +74,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='app/gui/assets/icon.png'
+    icon='app/gui/assets/icon.ico'
 )
 
 coll = COLLECT(
@@ -84,5 +85,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='SuppSalesAgentAppV7',
+    name='SuppSalesAgentAppV12',
 )

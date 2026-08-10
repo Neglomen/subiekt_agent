@@ -29,7 +29,8 @@ class SferaInstance:
 
         try:
             pythoncom.CoInitialize()
-            gt = win32com.client.Dispatch("InsERT.GT")
+            import win32com.client.dynamic
+            gt = win32com.client.dynamic.Dispatch("InsERT.GT")
             gt.Produkt = 1
             gt.Autentykacja = 0
             gt.Serwer = self.settings.db_server_name
@@ -37,7 +38,8 @@ class SferaInstance:
             gt.Operator = self.settings.sfera_operator
             gt.OperatorHaslo = self.settings.sfera_operator_password
             
-            self.o_subiekt = gt.Uruchom(6)  # Tryb cichy
+            subiekt_raw = gt.Uruchom(6)  # Tryb cichy
+            self.o_subiekt = win32com.client.dynamic.Dispatch(subiekt_raw) if subiekt_raw is not None else None
 
             if self.o_subiekt is None or (hasattr(gt, 'GetLastError') and gt.GetLastError() != 0):
                 error_code = gt.GetLastError() if hasattr(gt, 'GetLastError') else 'N/A'

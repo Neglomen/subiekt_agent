@@ -175,6 +175,10 @@ class BroadcastLogHandler(logging.Handler):
     """Logging handler that feeds records to the WebSocket broadcaster."""
 
     def emit(self, record: logging.LogRecord):
+        # Ignoruj logi uvicorn/websockets o poziomie poniżej WARNING, aby uniknąć pętli zwrotnej w WebSocket
+        if record.name.startswith(("uvicorn", "websockets", "asyncio", "watchfiles")) and record.levelno < logging.WARNING:
+            return
+
         try:
             msg = self.format(record)
             # We can't await from a sync context, so we schedule via asyncio
@@ -216,6 +220,7 @@ class GUIConfigPayload(BaseModel):
     fiscalization_enabled: bool = False
     fiscal_printer_id: int = 0
     distributed_costs_keywords: List[str] = []
+    ignore_ssl_errors: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +266,7 @@ async def gui_status():
         "cf_url": cf_url,
         "ngrok_connected": ngrok_connected,
         "ngrok_url": ngrok_url,
-        "version": "0.5.1-web",
+        "version": "0.8.1",
     }
 
 
@@ -317,6 +322,7 @@ async def gui_get_config():
         fiscalization_enabled=mapping.fiscalization_enabled,
         fiscal_printer_id=mapping.fiscal_printer_id or 0,
         distributed_costs_keywords=mapping.distributed_costs_keywords,
+        ignore_ssl_errors=mapping.ignore_ssl_errors,
     )
 
 
@@ -349,6 +355,7 @@ async def gui_save_config(payload: GUIConfigPayload):
         mapping.fiscalization_enabled = payload.fiscalization_enabled
         mapping.fiscal_printer_id = payload.fiscal_printer_id
         mapping.distributed_costs_keywords = payload.distributed_costs_keywords
+        mapping.ignore_ssl_errors = payload.ignore_ssl_errors
         config_svc.save_config(mapping)
 
         # 3. Update tunnels dynamically if tray app is running
@@ -409,6 +416,31 @@ async def gui_clear_logs():
     log_broadcaster._buffer.clear()
     return {"status": "ok"}
 
+
+from app.services.updater import update_manager
+
+class DownloadUpdatePayload(BaseModel):
+    download_url: str
+
+@router.get("/update/check")
+async def gui_update_check():
+    """Checks for newer agent versions on GitHub."""
+    return update_manager.check_for_updates()
+
+@router.post("/update/download")
+async def gui_update_download(payload: DownloadUpdatePayload):
+    """Starts the background download and install of the update."""
+    update_manager.start_download_and_install(payload.download_url)
+    return {"status": "ok"}
+
+@router.get("/update/progress")
+async def gui_update_progress():
+    """Returns the current download progress and status."""
+    return {
+        "status": update_manager.download_status,
+        "progress": update_manager.download_progress,
+        "error": update_manager.error_message
+    }
 
 # ---------------------------------------------------------------------------
 # WEBSOCKET LOG STREAMING

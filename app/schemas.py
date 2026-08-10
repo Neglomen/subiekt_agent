@@ -82,12 +82,48 @@ class SalesInvoiceCreateRequest(BaseModel):
     payment_type: str = Field(..., description="Forma płatności (np. 'przelew', 'pobranie'). Musi istnieć w Subiekcie.")
     is_paid_in_advance: bool = Field(False, description="Czy płatność została już uregulowana (np. PayU, Przelewy24).")
     
+    notes: Optional[str] = Field(None, description="Uwagi do dokumentu sprzedaży.")
+    comments: Optional[str] = Field(None, description="Komentarze do dokumentu.")
+    remarks: Optional[str] = Field(None, description="Uwagi/komentarze.")
+    uwagi: Optional[str] = Field(None, description="Uwagi do dokumentu w języku polskim.")
+    
     line_items: List[SalesInvoiceLineItem] = Field(..., min_length=1, description="Lista pozycji na fakturze.")
 
 class SalesInvoiceCreateResponse(BaseModel):
     """Model odpowiedzi po pomyślnym utworzeniu faktury sprzedaży."""
     success: bool = True
     subiekt_document_number: str = Field(..., description="Pełny numer nowo utworzonego dokumentu FS w Subiekcie.")
+    action_taken: str = Field(..., description="Opis wykonanej akcji: 'created' lub 'existed'.")
+    message: str
+
+# --- SCHEMATY DLA KOREKT SPRZEDAŻY (KFS) ---
+
+class SalesInvoiceCorrectLineItem(BaseModel):
+    """Model pozycji na korekcie faktury sprzedaży."""
+    product_symbol: str = Field(..., description="Symbol towaru w Subiekcie.")
+    new_quantity: Optional[Decimal] = Field(None, description="Nowa docelowa ilość towaru po korekcie.")
+    corrected_quantity: Optional[Decimal] = Field(None, description="Nowa docelowa ilość towaru po korekcie (ilość po skorygowaniu).")
+    new_gross_price: Optional[Decimal] = Field(None, description="Nowa cena brutto po korekcie.")
+    new_net_price: Optional[Decimal] = Field(None, description="Nowa cena netto po korekcie.")
+
+class SalesInvoiceCorrectRequest(BaseModel):
+    """Model żądania do utworzenia Korekty Faktury Sprzedaży (KFS)."""
+    original_sales_document_number: Optional[str] = Field(None, description="Pełny numer korygowanej Faktury Sprzedaży (FS) w Subiekcie.")
+    original_order_number: Optional[str] = Field(None, description="Numer oryginalnego zamówienia klienta (do wyszukania FS).")
+    
+    correction_reason: str = Field(..., description="Przyczyna korekty.")
+    issue_date: date = Field(..., description="Data wystawienia korekty.")
+    
+    payment_type: Optional[str] = Field(None, description="Forma płatności dla zwrotu (np. 'przelew', 'gotówka').")
+    payment_due_date: Optional[date] = Field(None, description="Termin płatności dla zwrotu.")
+    
+    line_items: List[SalesInvoiceCorrectLineItem] = Field(..., min_length=1, description="Lista pozycji na korekcie.")
+
+class SalesInvoiceCorrectResponse(BaseModel):
+    """Model odpowiedzi po pomyślnym utworzeniu korekty sprzedaży."""
+    success: bool = True
+    subiekt_document_number: str = Field(..., description="Pełny numer nowo utworzonego dokumentu KFS w Subiekcie.")
+    correction_amount: Decimal = Field(..., description="Kwota brutto korekty (wartość różnicy).")
     action_taken: str = Field(..., description="Opis wykonanej akcji: 'created' lub 'existed'.")
     message: str
 
@@ -112,6 +148,7 @@ class AllMappingsRead(BaseModel):
     service_mappings: ServiceMappings
     product_mappings: Dict[str, str]
     distributed_costs_keywords: List[str]
+    ignore_ssl_errors: bool = False
 
 
 # --- SCHEMATY DLA MASOWEJ WERYFIKACJI STANÓW MAGAZYNOWYCH ---

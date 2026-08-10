@@ -3,7 +3,7 @@
 
 [Setup]
 AppName=SuppSales Subiekt GT Agent
-AppVersion=0.5.1
+AppVersion=0.8.1
 DefaultDirName={userappdata}\SuppSalesAgent
 DefaultGroupName=SuppSales Agent
 OutputDir=Output
@@ -11,14 +11,14 @@ OutputBaseFilename=SuppSalesAgent_Setup
 Compression=lzma
 SolidCompression=yes
 ; Ścieżka do ikony instalatora i deinstalatora
-SetupIconFile=..\app\gui\assets\icon.png
-UninstallDisplayIcon={app}\SuppSalesAgent.exe
+SetupIconFile=..\app\gui\assets\icon.ico
+UninstallDisplayIcon={app}\SuppSalesAgentAppV12.exe
 ; Instalacja w AppData użytkownika nie wymaga uprawnień administratora
 PrivilegesRequired=lowest
 
 [Files]
 ; Kopiujemy wszystkie pliki skompilowane przez PyInstaller z katalogu dist
-Source: "..\dist\SuppSalesAgent\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
+Source: "..\dist\SuppSalesAgentAppV12\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
 ; Dodatkowo jeśli deweloper ma pliki konfiguracyjne w głównym folderze,
 ; kopiujemy je do folderu instalacyjnego tylko jeśli tam nie istnieją,
@@ -28,9 +28,9 @@ Source: "..\.env"; DestDir: "{app}"; Flags: onlyifdoesntexist
 
 [Icons]
 ; Skróty w menu Start i na pulpicie
-Name: "{group}\SuppSales Agent"; Filename: "{app}\SuppSalesAgent.exe"; IconFilename: "{app}\app\gui\assets\icon.png"
-Name: "{commondesktop}\SuppSales Agent"; Filename: "{app}\SuppSalesAgent.exe"; IconFilename: "{app}\app\gui\assets\icon.png"
+Name: "{group}\SuppSales Agent"; Filename: "{app}\SuppSalesAgentAppV12.exe"; IconFilename: "{app}\app\gui\assets\icon.ico"
+Name: "{commondesktop}\SuppSales Agent"; Filename: "{app}\SuppSalesAgentAppV12.exe"; IconFilename: "{app}\app\gui\assets\icon.ico"
 
 [Run]
 ; Opcja uruchomienia aplikacji zaraz po zakończeniu instalacji
-Filename: "{app}\SuppSalesAgent.exe"; Description: "Uruchom SuppSales Agent"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\SuppSalesAgentAppV12.exe"; Description: "Uruchom SuppSales Agent"; Flags: nowait postinstall skipifsilent

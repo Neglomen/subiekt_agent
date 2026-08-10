@@ -51,8 +51,12 @@ class CloudflareManager:
                 headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
             )
             
+            from app.config import settings
+            from app.utils import urlopen_with_fallback
+            ignore_ssl = getattr(settings.mappings, 'ignore_ssl_errors', False)
+            
             logger.info("Łączenie z GitHub w celu pobrania cloudflared...")
-            with urllib.request.urlopen(req) as response, open(self.bin_path, 'wb') as out_file:
+            with urlopen_with_fallback(req, ignore_ssl=ignore_ssl) as response, open(self.bin_path, 'wb') as out_file:
                 # Pobieranie w blokach z raportowaniem postępu
                 total_size = int(response.info().get('Content-Length', 0))
                 downloaded = 0
