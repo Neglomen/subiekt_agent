@@ -12,9 +12,10 @@ interface UpdateInfo {
 interface UpdateModalProps {
   updateInfo: UpdateInfo;
   onClose: () => void;
+  apiKey: string | null;
 }
 
-export const UpdateModal: React.FC<UpdateModalProps> = ({ updateInfo, onClose }) => {
+export const UpdateModal: React.FC<UpdateModalProps> = ({ updateInfo, onClose, apiKey }) => {
   const [downloadStatus, setDownloadStatus] = useState<'idle' | 'downloading' | 'finished' | 'error'>('idle');
   const [progress, setProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
@@ -25,10 +26,11 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ updateInfo, onClose })
     setErrorMsg('');
 
     try {
+      // Serwer sam ponownie ustala i weryfikuje URL najnowszego wydania — nie
+      // przekazujemy download_url z klienta (patrz subiekt_agent/CLAUDE.md).
       const res = await fetch('/gui/update/download', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ download_url: updateInfo.download_url })
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey || '' },
       });
 
       if (!res.ok) {
@@ -46,7 +48,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ updateInfo, onClose })
   const pollProgress = () => {
     const interval = setInterval(async () => {
       try {
-        const res = await fetch('/gui/update/progress');
+        const res = await fetch('/gui/update/progress', { headers: { 'X-API-Key': apiKey || '' } });
         if (res.ok) {
           const data = await res.json();
           setDownloadStatus(data.status);

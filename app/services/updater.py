@@ -10,11 +10,17 @@ import urllib.request
 import json
 from pathlib import Path
 from typing import Dict, Any, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 APP_VERSION = "0.8.1"
 GITHUB_REPO = "Neglomen/subiekt_agent"
+
+# Aktualizacje mogą być pobierane wyłącznie z tych hostów (GitHub Releases).
+# Chroni przed nadużyciem mechanizmu auto-update do pobrania i uruchomienia
+# dowolnego pliku (patrz subiekt_agent/CLAUDE.md — sekcja "Bezpieczeństwo").
+ALLOWED_DOWNLOAD_HOSTS = ("github.com", "objects.githubusercontent.com")
 
 class UpdateManager:
     def __init__(self):
@@ -22,6 +28,15 @@ class UpdateManager:
         self.download_status = "idle"  # idle, downloading, finished, error
         self.error_message = ""
         self.downloaded_file_path: Optional[Path] = None
+
+    @staticmethod
+    def is_safe_download_url(url: str) -> bool:
+        """Sprawdza, czy URL wskazuje na zaufany host (GitHub Releases) po HTTPS."""
+        try:
+            parsed = urlparse(url)
+            return parsed.scheme == "https" and parsed.hostname in ALLOWED_DOWNLOAD_HOSTS
+        except Exception:
+            return False
 
     @staticmethod
     def parse_version(version_str: str) -> tuple:
@@ -105,6 +120,11 @@ class UpdateManager:
 
     def _download_and_install_worker(self, download_url: str):
         """Pracownik pobierający plik w pętli z uaktualnianiem postępu."""
+        if not self.is_safe_download_url(download_url):
+            logger.error(f"Odrzucono pobieranie z niezaufanego URL: {download_url}")
+            self.download_status = "error"
+            self.error_message = "Adres pobierania nie przeszedł weryfikacji bezpieczeństwa."
+            return
         try:
             logger.info(f"Rozpoczynam pobieranie aktualizacji z URL: {download_url}")
             temp_dir = Path(tempfile.gettempdir())

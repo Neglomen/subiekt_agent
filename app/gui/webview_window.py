@@ -15,6 +15,20 @@ _webview_started = threading.Event()
 
 class WindowAPI:
     """API wystawione dla JavaScript (window.pywebview.api) do sterowania oknem."""
+
+    def get_api_key(self) -> str:
+        """
+        Zwraca aktualny agent_api_key przez natywny most pywebview (JS<->Python IPC),
+        NIE przez HTTP. To jedyny sposób, w jaki panel webowy poznaje klucz API bez
+        polegania na nieautoryzowanym żądaniu HTTP — most pywebview nie jest
+        osiągalny przez tunel Cloudflare/ngrok (to proces lokalny, nie sieciowy),
+        więc ktoś łączący się z panelem przez publiczny URL tunelu nigdy nie ma
+        dostępu do window.pywebview.api i nie może w ten sposób pozyskać klucza.
+        Patrz subiekt_agent/CLAUDE.md — sekcja "Bezpieczeństwo".
+        """
+        from app.config import settings
+        return settings.sfera.agent_api_key
+
     def minimize(self):
         global _window
         if _window:

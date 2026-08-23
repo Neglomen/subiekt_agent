@@ -12,12 +12,13 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import List, Optional, Set
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import app.config as app_config
 from app.config import SferaSettings, MappingSettings, save_sfera_settings, BASE_DIR
+from app.dependencies import get_api_key
 from app.services.config_service import ConfigService
 
 logger = logging.getLogger(__name__)
@@ -227,7 +228,7 @@ class GUIConfigPayload(BaseModel):
 # ROUTER
 # ---------------------------------------------------------------------------
 
-router = APIRouter(prefix="/gui", tags=["GUI"])
+router = APIRouter(prefix="/gui", tags=["GUI"], dependencies=[Depends(get_api_key)])
 ws_router = APIRouter(tags=["GUI WebSocket"])
 
 
@@ -419,18 +420,29 @@ async def gui_clear_logs():
 
 from app.services.updater import update_manager
 
-class DownloadUpdatePayload(BaseModel):
-    download_url: str
-
 @router.get("/update/check")
 async def gui_update_check():
     """Checks for newer agent versions on GitHub."""
     return update_manager.check_for_updates()
 
 @router.post("/update/download")
-async def gui_update_download(payload: DownloadUpdatePayload):
-    """Starts the background download and install of the update."""
-    update_manager.start_download_and_install(payload.download_url)
+async def gui_update_download():
+    """
+    Starts the background download and install of the update.
+
+    The download URL is NEVER taken from the client request — it is re-derived
+    server-side from GitHub's release API (via check_for_updates()) and validated
+    against a host allowlist, so a caller cannot point the agent at an arbitrary
+    URL to download-and-execute (this used to accept `download_url` in the body).
+    """
+    info = update_manager.check_for_updates()
+    download_url = info.get("download_url")
+    if not info.get("is_newer") or not download_url:
+        return JSONResponse(status_code=400, content={"error": "Brak dostępnej aktualizacji do pobrania."})
+    if not update_manager.is_safe_download_url(download_url):
+        logger.error(f"Odrzucono podejrzany URL aktualizacji: {download_url}")
+        return JSONResponse(status_code=400, content={"error": "Adres pobierania nie przeszedł weryfikacji bezpieczeństwa."})
+    update_manager.start_download_and_install(download_url)
     return {"status": "ok"}
 
 @router.get("/update/progress")
@@ -448,7 +460,16 @@ async def gui_update_progress():
 
 @ws_router.websocket("/ws/logs")
 async def ws_logs(websocket: WebSocket):
-    """WebSocket endpoint — streams live logs to the browser dashboard."""
+    """WebSocket endpoint — streams live logs to the browser dashboard.
+
+    Browsers cannot set custom headers on a WebSocket handshake, so the API key
+    is passed as a query parameter instead (?api_key=...) and checked manually —
+    FastAPI's Depends()-based auth doesn't apply to WebSocket routes the same way.
+    """
+    api_key = websocket.query_params.get("api_key")
+    if not api_key or api_key != app_config.settings.sfera.agent_api_key:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     await log_broadcaster.connect(websocket)
     try:
         while True:

@@ -18,7 +18,7 @@
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
-    "@rollup/rollup-win32-x64-msvc": "file:rollup-rollup-win32-x64-msvc-4.62.2.tgz",
+    "@rollup/rollup-win32-x64-msvc": "^4.62.2",
     "@tailwindcss/vite": "^4.3.2",
     "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^24.13.2",

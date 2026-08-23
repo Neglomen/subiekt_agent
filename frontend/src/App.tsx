@@ -75,13 +75,26 @@ export default function App() {
   // Logs state
   const [logs, setLogs] = useState<string[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
-  
+
   // System control states
   const [restarting, setRestarting] = useState(false);
   const [toasts, setToasts] = useState<{ id: string; type: 'success' | 'error'; message: string }[]>([]);
   const [copied, setCopied] = useState(false);
-  
+
+  // API key — pozyskiwany WYŁĄCZNIE przez natywny most pywebview (JS<->Python IPC),
+  // nigdy przez HTTP. Panel otwarty przez publiczny URL tunelu (bez window.pywebview)
+  // nigdy nie zdobędzie klucza tą drogą. Patrz subiekt_agent/CLAUDE.md "Bezpieczeństwo".
+  const [apiKey, setApiKey] = useState<string | null>(null);
+  const apiKeyRef = useRef<string | null>(null);
+
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Wrapper na fetch() doklejający nagłówek X-API-Key do każdego wywołania /gui/*.
+  const guiFetch = (path: string, options: RequestInit = {}) => {
+    const headers = new Headers(options.headers || {});
+    if (apiKeyRef.current) headers.set('X-API-Key', apiKeyRef.current);
+    return fetch(path, { ...options, headers });
+  };
 
   const addToast = (type: 'success' | 'error', message: string) => {
     const id = Math.random().toString(36).substring(2, 9);
@@ -102,7 +115,7 @@ export default function App() {
   // --- API FETCHES ---
   const fetchConfig = async () => {
     try {
-      const res = await fetch('/gui/config');
+      const res = await guiFetch('/gui/config');
       if (res.ok) {
         const data = await res.json();
         setConfig(data);
@@ -114,7 +127,7 @@ export default function App() {
 
   const fetchStatus = async () => {
     try {
-      const res = await fetch('/gui/status');
+      const res = await guiFetch('/gui/status');
       if (res.ok) {
         const data = await res.json();
         setSferaConnected(data.sfera_connected);
@@ -134,7 +147,7 @@ export default function App() {
 
   const fetchStats = async () => {
     try {
-      const res = await fetch('/gui/stats');
+      const res = await guiFetch('/gui/stats');
       if (res.ok) {
         const data = await res.json();
         setStats(data);
@@ -151,9 +164,11 @@ export default function App() {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Use relative path for proxy support
-    const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
-    
+    // Use relative path for proxy support. Browsers can't set custom headers on
+    // a WebSocket handshake, so the API key travels as a query param instead.
+    const keyParam = apiKeyRef.current ? `?api_key=${encodeURIComponent(apiKeyRef.current)}` : '';
+    const wsUrl = `${protocol}//${window.location.host}/ws/logs${keyParam}`;
+
     console.log(`Connecting to logs WebSocket: ${wsUrl}`);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -206,7 +221,7 @@ export default function App() {
   // --- ACTIONS ---
   const handleTestSfera = async (): Promise<boolean> => {
     try {
-      const res = await fetch('/gui/test-sfera', { method: 'POST' });
+      const res = await guiFetch('/gui/test-sfera', { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         setSferaConnected(data.sfera_connected);
@@ -222,13 +237,19 @@ export default function App() {
 
   const handleSaveConfig = async (newConfig: GUIConfig): Promise<boolean> => {
     try {
-      const res = await fetch('/gui/config', {
+      const res = await guiFetch('/gui/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newConfig),
       });
       if (res.ok) {
         setConfig(newConfig);
+        // Jeśli operator zmienił agent_api_key, zaktualizuj go od razu w pamięci —
+        // inaczej kolejne guiFetch() użyłyby już nieaktualnego klucza i dostałyby 401.
+        if (newConfig.agent_api_key && newConfig.agent_api_key !== apiKeyRef.current) {
+          apiKeyRef.current = newConfig.agent_api_key;
+          setApiKey(newConfig.agent_api_key);
+        }
         await fetchStatus();
         return true;
       }
@@ -241,8 +262,13 @@ export default function App() {
 
   const handleResetConfig = async (): Promise<boolean> => {
     try {
-      const res = await fetch('/gui/config/reset', { method: 'POST' });
+      const res = await guiFetch('/gui/config/reset', { method: 'POST' });
       if (res.ok) {
+        // Reset przywraca agent_api_key do wbudowanego placeholdera po stronie
+        // serwera — zaktualizuj go lokalnie od razu, zanim odpytamy /gui/config
+        // starym (już nieważnym) kluczem.
+        apiKeyRef.current = 'SECRET_API_KEY_PLACEHOLDER';
+        setApiKey('SECRET_API_KEY_PLACEHOLDER');
         await fetchConfig();
         await fetchStatus();
         return true;
@@ -256,7 +282,7 @@ export default function App() {
 
   const checkUpdates = async (manual = false) => {
     try {
-      const res = await fetch('/gui/update/check');
+      const res = await guiFetch('/gui/update/check');
       if (res.ok) {
         const data = await res.json();
         if (data.is_newer) {
@@ -279,7 +305,7 @@ export default function App() {
     addToast('success', 'Wysłano żądanie restartu agenta. Połączenie zostanie przerwane na kilka sekund.');
     
     try {
-      await fetch('/gui/restart', { method: 'POST' });
+      await guiFetch('/gui/restart', { method: 'POST' });
     } catch (err) {
       // Fetch will fail because server shuts down, which is expected
     }
@@ -290,8 +316,39 @@ export default function App() {
     }, 4000);
   };
 
-  // Setup periodic polling and WS log stream
+  // Pozyskaj klucz API WYŁĄCZNIE przez natywny most pywebview (window.pywebview.api),
+  // nigdy przez HTTP — to jedyny kanał niedostępny z zewnątrz przez tunel Cloudflare/ngrok.
   useEffect(() => {
+    let cancelled = false;
+    const grabKey = () => {
+      const bridge = (window as any).pywebview?.api;
+      if (bridge?.get_api_key) {
+        bridge
+          .get_api_key()
+          .then((key: string) => {
+            if (!cancelled && key) {
+              apiKeyRef.current = key;
+              setApiKey(key);
+            }
+          })
+          .catch((err: any) => console.error('Nie udało się pobrać klucza API z mostu pywebview', err));
+      }
+    };
+    if ((window as any).pywebview) {
+      grabKey();
+    } else {
+      window.addEventListener('pywebviewready', grabKey);
+    }
+    return () => {
+      cancelled = true;
+      window.removeEventListener('pywebviewready', grabKey);
+    };
+  }, []);
+
+  // Setup periodic polling and WS log stream — dopiero gdy mamy klucz API.
+  useEffect(() => {
+    if (!apiKey) return;
+
     fetchConfig();
     fetchStatus();
     fetchStats();
@@ -308,11 +365,26 @@ export default function App() {
         wsRef.current.close();
       }
     };
-  }, []);
+  }, [apiKey]);
+
+  // Bez klucza API (most pywebview niedostępny) panel nie może bezpiecznie wywołać
+  // żadnego /gui/* endpointu — pokazujemy komunikat zamiast pustego/zawieszonego UI.
+  if (!apiKey) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-slate-950 text-center px-6">
+        <div className="w-2 h-2 rounded-full bg-primary animate-pulse mb-4"></div>
+        <p className="text-sm font-bold text-text-main mb-1">Łączenie z aplikacją agenta…</p>
+        <p className="text-xs text-text-muted max-w-sm">
+          Jeśli ten ekran nie znika, otwórz panel przez ikonę SuppSales Agent w zasobniku
+          systemowym — panel wymaga natywnego mostu pywebview i nie działa w zwykłej przeglądarce.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-slate-950 relative">
-      
+
       {/* Decorative background blurs */}
       <div className="absolute top-10 left-10 w-[500px] h-[500px] bg-primary/5 blur-[150px] rounded-full pointer-events-none z-0"></div>
       <div className="absolute bottom-10 right-10 w-[500px] h-[500px] bg-purple-500/5 blur-[150px] rounded-full pointer-events-none z-0"></div>
@@ -619,6 +691,7 @@ export default function App() {
         <UpdateModal
           updateInfo={updateInfo}
           onClose={() => setShowUpdateModal(false)}
+          apiKey={apiKey}
         />
       )}
 
@@ -637,7 +710,7 @@ export default function App() {
   function onClear() {
     setLogs([]);
     try {
-      fetch('/gui/logs/clear', { method: 'POST' });
+      guiFetch('/gui/logs/clear', { method: 'POST' });
     } catch (err) {}
   }
 }
