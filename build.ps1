@@ -22,9 +22,21 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "[-] Błąd podczas działania PyInstaller! Przerywam." -ForegroundColor Red
     exit $LASTEXITCODE
 }
-Write-Host "[+] Kopiowanie plików konfiguracyjnych (.env, config.json) do katalogu dist\SuppSalesAgentAppV12..." -ForegroundColor Yellow
-Copy-Item -Path ".env" -Destination "dist\SuppSalesAgentAppV12\.env" -Force
-Copy-Item -Path "config.json" -Destination "dist\SuppSalesAgentAppV12\config.json" -Force
+# UWAGA: .env i config.json CELOWO nie trafiają do paczki.
+#  * .env zawiera hasło operatora Sfery, klucz API agenta oraz tokeny Cloudflare/ngrok,
+#    a release na GitHubie jest publiczny — instalator Inno Setup rozpakowuje się
+#    zwykłym archiwizerem, więc wszystko w nim jest do odczytania przez każdego.
+#    Agent bez .env startuje na wartościach domyślnych (SferaSettings w app/config.py)
+#    i konfiguruje się przez panel GUI, który zapisuje .env na miejscu.
+#  * config.json instaluje Inno Setup z flagą onlyifdoesntexist, żeby aktualizacja
+#    nie nadpisała mapowań towarów na komputerze klienta kopią z maszyny budującej.
+Write-Host "[+] Usuwanie plików konfiguracyjnych z paczki (nie mogą trafić do publicznego instalatora)..." -ForegroundColor Yellow
+foreach ($leftover in @("dist\SuppSalesAgentAppV12\.env", "dist\SuppSalesAgentAppV12\config.json")) {
+    if (Test-Path $leftover) {
+        Remove-Item -Path $leftover -Force
+        Write-Host "    - usunieto $leftover" -ForegroundColor DarkGray
+    }
+}
 Write-Host "[+] PyInstaller pomyślnie skompilował pliki do katalogu dist\SuppSalesAgentAppV12." -ForegroundColor Green
 
 # 3. Uruchomienie kompilacji Inno Setup

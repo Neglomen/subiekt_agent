@@ -20,6 +20,7 @@ import app.config as app_config
 from app.config import SferaSettings, MappingSettings, save_sfera_settings, BASE_DIR
 from app.dependencies import get_api_key
 from app.services.config_service import ConfigService
+from app.services.updater import APP_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +268,7 @@ async def gui_status():
         "cf_url": cf_url,
         "ngrok_connected": ngrok_connected,
         "ngrok_url": ngrok_url,
-        "version": "0.8.1",
+        "version": APP_VERSION,
     }
 
 

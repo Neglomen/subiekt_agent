@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.9.0"
 GITHUB_REPO = "Neglomen/subiekt_agent"
 
 # Aktualizacje mogą być pobierane wyłącznie z tych hostów (GitHub Releases).

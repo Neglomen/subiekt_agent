@@ -16,6 +16,16 @@ Pillow = "^10.2.0"
 pyinstaller = "^6.5.0"
 pywebview = "^6.2.1"
 
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.0"
+
+[tool.pytest.ini_options]
+# Testy obejmują wyłącznie czystą logikę (app/pricing.py) — nie dotykają COM,
+# Sfery ani Subiekta, więc chodzą na dowolnej maszynie. Skrypty w scratch/
+# to narzędzia diagnostyczne wymagające żywego Subiekta, nie testy.
+testpaths = ["tests"]
+pythonpath = ["."]
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

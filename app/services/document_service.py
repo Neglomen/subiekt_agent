@@ -1,11 +1,12 @@
 import logging
 import pywintypes
 from datetime import datetime, time
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from app.config import AppConfig
 from app.exceptions import InvoiceNotFoundError, OutOfStockValidationError, SferaConnectionError
 from app.repositories.document_repository import DocumentRepository
+from app.pricing import lines_total, split_gross_into_fiscal_lines
 from app.repositories.product_repository import ProductRepository, normalize_symbol
 from app.schemas import SalesInvoiceCreateRequest, InvoiceCreateRequest, InvoiceCheckRequest, SalesInvoiceCorrectRequest
 from app.sfera.sfera_instance import SferaInstance
@@ -439,16 +440,31 @@ class DocumentService:
                             item_gross_value = round(share * target_total_gross, 2)
                             sum_assigned_values += item_gross_value
                         
-                        comp_unit_price = round(item_gross_value / comp_qty, 4) if comp_qty > 0 else 0.0
+                        # Cena jednostkowa MUSI mieć 2 miejsca po przecinku. Drukarka
+                        # fiskalna nie dostaje wartości pozycji — liczy ją sama z ceny
+                        # podanej w groszach, więc cena typu 8,3317 była przez nią
+                        # zaokrąglana i suma rozjeżdżała się o grosz-dwa (faktura
+                        # nie przechodziła fiskalizacji). Gdy wartość nie dzieli się
+                        # równo, składnik trafia na dwie pozycje różniące się o grosz.
+                        fiscal_lines = split_gross_into_fiscal_lines(item_gross_value, comp_qty)
+                        if lines_total(fiscal_lines) != Decimal(str(item_gross_value)):
+                            logger.warning(
+                                f"    -> Składnik {comp['symbol']}: nie udało się rozbić "
+                                f"{item_gross_value:.2f} zł na {comp_qty} szt bez reszty "
+                                f"(wyszło {lines_total(fiscal_lines)} zł). Prawdopodobna "
+                                "przyczyna: ilość ułamkowa."
+                            )
 
-                        pozycja = nowa_fs.Pozycje.Dodaj(comp["id"])
-                        pozycja.IloscJm = comp_qty
-                        pozycja.CenaBruttoPrzedRabatem = comp_unit_price
-                        logger.debug(
-                            f"    -> Składnik: {comp['symbol']} (ID: {comp['id']}), "
-                            f"Ilość: {comp_qty}, Cena bazowa: {get_base_price(comp, price_level):.2f}, "
-                            f"Cena jednostkowa FS: {comp_unit_price:.4f}, Wartość brutto: {item_gross_value:.2f}"
-                        )
+                        for line_qty, line_price in fiscal_lines:
+                            pozycja = nowa_fs.Pozycje.Dodaj(comp["id"])
+                            pozycja.IloscJm = float(line_qty)
+                            pozycja.CenaBruttoPrzedRabatem = float(line_price)
+                            logger.debug(
+                                f"    -> Składnik: {comp['symbol']} (ID: {comp['id']}), "
+                                f"Ilość: {line_qty}, Cena bazowa: {get_base_price(comp, price_level):.2f}, "
+                                f"Cena jednostkowa FS: {line_price}, "
+                                f"Wartość pozycji: {line_qty * line_price}"
+                            )
                 else:
                     pozycja = nowa_fs.Pozycje.Dodaj(details["id"])
                     pozycja.IloscJm = float(item.quantity)
@@ -457,6 +473,30 @@ class DocumentService:
                     logger.debug(f" -> Dodano pozycję {i} (ID: {details['id']}, Typ: {details['type']}, Cena Brutto: {item.gross_price})")
 
             self._handle_payment(nowa_fs, invoice_data)
+
+            # Bezpiecznik: wartość dokumentu musi zgadzać się z tym, co klient
+            # zapłacił na marketplace. Rozjazd o grosze bierze się zwykle
+            # z zaokrągleń przy rozkładzie kompletu na składniki i objawia się
+            # dopiero jako nieudana fiskalizacja — ślad w logu pozwala go złapać
+            # od razu. Nie przerywamy zapisu: dokument jest poprawny księgowo,
+            # a blokowanie sprzedaży za jeden grosz byłoby gorsze niż ostrzeżenie.
+            try:
+                expected_gross = sum(
+                    (Decimal(str(li.gross_price)) * Decimal(str(li.quantity))
+                     for li in invoice_data.line_items),
+                    Decimal("0"),
+                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                document_gross = Decimal(str(nowa_fs.KwotaDoZaplaty)).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                if document_gross != expected_gross:
+                    logger.warning(
+                        f"Wartość FS ({document_gross} zł) różni się od kwoty zamówienia "
+                        f"({expected_gross} zł) o {document_gross - expected_gross} zł. "
+                        "Fiskalizacja może się nie powieść — sprawdź zaokrąglenia pozycji."
+                    )
+            except Exception as check_err:
+                logger.debug(f"Nie udało się zweryfikować sumy dokumentu: {check_err}")
 
             logger.debug("ETAP 6: Zapisywanie dokumentu...")
             nowa_fs.Zapisz()

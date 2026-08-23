@@ -14,6 +14,7 @@ from app.lifespan import lifespan
 from app.dependencies import get_api_key
 from app.services.document_service import DocumentService
 from app.services.config_service import ConfigService
+from app.services.updater import APP_VERSION
 from app.repositories.product_repository import ProductRepository
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.payment_form_repository import PaymentFormRepository
@@ -73,7 +74,7 @@ logging.getLogger().addHandler(_broadcast_handler)
 
 app = FastAPI(
     title="SuppSales Subiekt GT Agent",
-    version="0.8.1",
+    version=APP_VERSION,
     description="Agent do integracji platformy SuppSales z systemem InsERT Subiekt GT przez Sferę.",
     lifespan=lifespan
 )

@@ -24,7 +24,7 @@ Działa jako aplikacja w **zasobniku systemowym Windows** (tray icon) z natywnym
 | Auto-update | własny `UpdateManager` + GitHub Releases (`Neglomen/subiekt_agent`) | sprawdzanie/pobieranie nowych wersji |
 | Zarządzanie zależnościami | Poetry (`pyproject.toml`, `poetry.lock`) | — |
 
-**Wersja aplikacji:** 0.8.1 (`app/main.py`, `app/services/updater.py::APP_VERSION`)
+**Wersja aplikacji:** 0.9.0 — jedyne źródło prawdy to `app/services/updater.py::APP_VERSION` (importują je `app/main.py` i `app/gui_api.py`). Drugie, niezależne miejsce to `AppVersion` w `installer/setup.iss` — Inno Setup nie zaimportuje stałej z Pythona, więc przy wydaniu trzeba podbić oba.
 **GitHub Releases:** `Neglomen/subiekt_agent`
 
 ---
@@ -61,7 +61,7 @@ subiekt_agent/
 ├── frontend/                      # Źródła panelu webowego (React+Vite) — build trafia do app/static/
 ├── scratch/                       # Ad-hoc skrypty deweloperskie do debugowania Sfery/SQL (NIE testy — patrz "Znane problemy")
 ├── installer/setup.iss            # Konfiguracja instalatora Inno Setup
-├── build.ps1                      # poetry run pyinstaller → kopiuje .env/config.json → ISCC.exe
+├── build.ps1                      # poetry run pyinstaller → usuwa .env/config.json z paczki → ISCC.exe
 ├── subiekt_agent.spec             # Konfiguracja PyInstaller (co trafia do .exe)
 ├── config.json                    # Mapowania biznesowe (płatności, usługi, produkty) — commitowane do repo
 ├── .env                           # Sekrety (DB, hasło operatora, API key, tokeny tuneli) — gitignored, ale patrz niżej
@@ -76,6 +76,10 @@ subiekt_agent/
 # Dev: backend (z katalogu subiekt_agent/)
 poetry install
 poetry run python main_gui.py
+
+# Testy (czysta logika — nie wymagają Subiekta ani Windows)
+poetry install --with dev
+poetry run pytest
 
 # Dev: frontend panelu GUI (z katalogu frontend/, hot-reload osobno od backendu)
 cd frontend && npm install && npm run dev
@@ -155,7 +159,7 @@ Pełna, żywa dokumentacja: `/docs` (Swagger UI, FastAPI domyślne — publiczni
    - Zweryfikowano end-to-end przez `starlette.testclient.TestClient`: brak klucza / zły klucz → 401 na REST i disconnect na WS; poprawny klucz → 200/połączenie; `update/download` z poprawnym kluczem ale bez faktycznej nowszej wersji → 400 (serwer sam to sprawdza, nie ufa klientowi).
    - Przy okazji naprawiono niezwiązany, ale blokujący `npm install`, problem: `frontend/package.json` wskazywał na brakujący lokalny plik `rollup-rollup-win32-x64-msvc-4.62.2.tgz` — zmieniono na wersję z rejestru npm (`^4.62.2`).
 
-2. **Sekrety/dane biznesowe w publicznym repo GitHub**: `.env` jest zacommitowany (obecnie same placeholdery, ale mechanizm zapisu istnieje i `build.ps1` kopiuje lokalny `.env` do paczki dystrybucyjnej — łatwo przypadkiem zbudować i opublikować `.exe` z prawdziwym hasłem w środku). `config.json` zawiera prawdziwe mapowania produktów konkretnego klienta. `.gitignore` ma regułę `.env`, ale nie działa retroaktywnie na już scommitowane pliki — jeśli kiedykolwiek wpisano tam prawdziwe hasło, trzeba je zrotować i wyczyścić historię git (BFG/`git filter-repo`), bo repo jest **publiczne**.
+2. **Sekrety/dane biznesowe w publicznym repo GitHub**: do wersji 0.8.1 włącznie `build.ps1` kopiował lokalny `.env` do paczki dystrybucyjnej, a `setup.iss` pakował go do instalatora — opublikowany na GitHub Releases `.exe` rozpakowuje się zwykłym archiwizerem, więc hasło operatora Sfery, `agent_api_key` i tokeny tuneli mogły być publicznie dostępne. **Naprawione od 0.9.0**: `build.ps1` usuwa `.env`/`config.json` z `dist/`, a `setup.iss` nie pakuje już `.env`. Agent bez `.env` startuje na wartościach domyślnych i konfiguruje się przez panel GUI. Artefakty starszych release'ów nie zostały zweryfikowane ani wycofane. `config.json` zawiera prawdziwe mapowania produktów konkretnego klienta. `.gitignore` ma regułę `.env`, ale nie działa retroaktywnie na już scommitowane pliki — jeśli kiedykolwiek wpisano tam prawdziwe hasło, trzeba je zrotować i wyczyścić historię git (BFG/`git filter-repo`), bo repo jest **publiczne**.
 
 3. SQL budowany przez f-string interpolation w `repositories/product_repository.py` (i pokrewnych) zamiast sparametryzowanych zapytań ADO. Obecne łatanie (`replace("'", "''")`, `replace("'", "")`, rzutowanie na `int()`) broni przed najprostszym SQL injection, ale to kruchy wzorzec — nowe pole dodane bez tej dyscypliny = dziura. Docelowo: `Command` + parametry ADO.
 
@@ -169,7 +173,7 @@ Pełna, żywa dokumentacja: `/docs` (Swagger UI, FastAPI domyślne — publiczni
 
 ## Znane problemy / dług techniczny
 
-- **Brak testów automatycznych.** `scratch/` (≈1750 linii) to ręczne skrypty deweloperskie do eksploracji Sfery/SQL, nie prawdziwy test suite — brak pytest, brak CI (`.github/workflows` nie istnieje). Przy logice tak krytycznej jak tworzenie faktur/korekt to duże ryzyko regresji przy każdej zmianie.
+- **Testy pokrywają na razie tylko arytmetykę cen.** `tests/test_pricing.py` sprawdza `app/pricing.py` (podział wartości kompletu na pozycje fiskalne) — to czysta logika, więc chodzi bez Subiekta i bez Windows. Reszta, w tym tworzenie FS/KFS/FZ/KFZ przez COM, jest nadal nieprzetestowana; brak CI (`.github/workflows` nie istnieje). `scratch/` (≈1750 linii) to ręczne skrypty deweloperskie do eksploracji Sfery/SQL, nie test suite.
 - `scratch/` zawiera scommitowane skompilowane `.pyc` (`__pycache__`) i binarny `test_print.pdf` — `.gitignore` próbuje je wykluczyć, ale zostały dodane wcześniej; warto `git rm --cached` i wyczyścić.
 - `app/services/document_service.py` — ponad 1200 linii w jednej klasie (FS, KFS, FZ/KFZ, płatności, KSeF, PDF). Kandydat do rozbicia na mniejsze serwisy per typ dokumentu.
 - Brak `README.md` w katalogu głównym repo (jest tylko generyczny `frontend/README.md` z boilerplate Vite) — brak instrukcji setupu dla kogoś innego niż autor.
