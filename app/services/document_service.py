@@ -649,11 +649,15 @@ class DocumentService:
             except Exception as e:
                 logger.debug(f"Nie udało się ustawić LiczonyOdCenBrutto na KFS: {e}")
 
+            # Subiekt GT to aplikacja Windows — pole Uwagi łamie wiersz dopiero na CRLF.
+            # Samo \n sklejało przyczynę korekty z numerem zamówienia w jedną linię,
+            # dlatego normalizujemy też uwagi przeniesione z FS przez NaPodstawie.
             notes_text = f"Przyczyna korekty: {invoice_data.correction_reason}"
-            if nowy_dok.Uwagi:
-                nowy_dok.Uwagi = f"{nowy_dok.Uwagi}\n{notes_text}"[:500]
-            else:
-                nowy_dok.Uwagi = notes_text[:500]
+            existing_notes = (nowy_dok.Uwagi or "").replace("\r\n", "\n").rstrip()
+            combined = f"{existing_notes}\n{notes_text}" if existing_notes else notes_text
+            # Przycinamy do 500 znaków (limit dok_Uwagi) dopiero po zamianie na CRLF,
+            # żeby limit liczył się tak, jak zapisze go baza; osierocony \r ucinamy.
+            nowy_dok.Uwagi = combined.replace("\n", "\r\n")[:500].rstrip("\r")
 
             # Ujęcie korekty w VAT. Domyślnie gtaUjecieKorektyTypWDacieWystawieniaKorekty (2)
             # — tak rozlicza się zwrot uzgodniony z nabywcą. Wartość 1 to ujęcie w dacie
