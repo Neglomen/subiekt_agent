@@ -133,6 +133,92 @@ class DocumentRepository(BaseRepository):
                 ado_recordset.Close()
         return results
 
+    def find_kfs_for_base_document(self, base_doc_id: int) -> Optional[Dict]:
+        """
+        Sprawdza, czy do danej FS wystawiono już korektę (KFS, typ 6).
+
+        Wiązanie idzie po dok_DoDokId (odpowiednik atrybutu DoDokumentuId ze Sfery),
+        a nie po treści uwag — uwagi bywają obcięte do 500 znaków albo w ogóle
+        nieprzeniesione przez NaPodstawie, więc szukanie po nich przepuszczało duplikaty.
+        """
+        ado_recordset = None
+        try:
+            sql_query = f"""
+                SELECT dok_Id, dok_NrPelny
+                FROM dok__Dokument WITH (NOLOCK)
+                WHERE dok_Typ = 6 AND dok_DoDokId = {int(base_doc_id)}
+            """
+            ado_recordset, _ = self.ado_connection.Execute(sql_query)
+            if ado_recordset.EOF:
+                return None
+            return {
+                "doc_id": ado_recordset.Fields("dok_Id").Value,
+                "doc_number": ado_recordset.Fields("dok_NrPelny").Value,
+            }
+        except Exception as e:
+            logger.error(f"Błąd podczas wyszukiwania istniejącej KFS dla dokumentu {base_doc_id}: {e}")
+            return None
+        finally:
+            if ado_recordset and ado_recordset.State != 0:
+                ado_recordset.Close()
+
+    def get_payer_nip(self, doc_id: int) -> Optional[str]:
+        """
+        Zwraca NIP płatnika dokumentu albo None dla sprzedaży detalicznej.
+
+        Decyduje o tym, czy korekta ma pójść do KSeF — tak samo jak przy fakturze
+        pierwotnej, gdzie o wyborze decydował NIP z żądania.
+        """
+        ado_recordset = None
+        try:
+            sql_query = f"""
+                SELECT a.adr_Nip
+                FROM dok__Dokument d WITH (NOLOCK)
+                JOIN kh__Kontrahent k ON d.dok_PlatnikId = k.kh_Id
+                JOIN adr__Ewid a ON a.adr_IdObiektu = k.kh_Id AND a.adr_TypAdresu = 1
+                WHERE d.dok_Id = {int(doc_id)}
+            """
+            ado_recordset, _ = self.ado_connection.Execute(sql_query)
+            if ado_recordset.EOF:
+                return None
+            nip = ado_recordset.Fields("adr_Nip").Value
+            return str(nip).strip() if nip and str(nip).strip() else None
+        except Exception as e:
+            logger.warning(f"Nie udało się odczytać NIP płatnika dokumentu {doc_id}: {e}")
+            return None
+        finally:
+            if ado_recordset and ado_recordset.State != 0:
+                ado_recordset.Close()
+
+    def get_correction_reasons(self) -> List[Dict]:
+        """
+        Zwraca słownik "Przyczyny korekty" (sl_PrzyczynaKorekty).
+
+        Sfera przyjmuje na pozycji korekty wyłącznie identyfikator
+        (SuPozycjaKorekty.PrzyczynaKorektyId), więc wolny tekst z formularza
+        trzeba najpierw odwzorować na pozycję tego słownika.
+        """
+        ado_recordset = None
+        results: List[Dict] = []
+        try:
+            sql_query = "SELECT pkr_Id, pkr_Nazwa FROM sl_PrzyczynaKorekty"
+            ado_recordset, _ = self.ado_connection.Execute(sql_query)
+            while not ado_recordset.EOF:
+                results.append({
+                    "id": ado_recordset.Fields("pkr_Id").Value,
+                    "name": ado_recordset.Fields("pkr_Nazwa").Value,
+                })
+                ado_recordset.MoveNext()
+        except Exception as e:
+            # Brak tabeli/kolumny nie może wywrócić wystawiania korekty — przyczyna
+            # zostanie wtedy wyłącznie w uwagach dokumentu.
+            logger.warning(f"Nie udało się odczytać słownika przyczyn korekty: {e}")
+            return []
+        finally:
+            if ado_recordset and ado_recordset.State != 0:
+                ado_recordset.Close()
+        return results
+
     def find_fs_by_number_or_order(self, doc_number: Optional[str], order_number: Optional[str]) -> List[Dict]:
         """
         Wyszukuje fakturę sprzedaży (FS, typ 2) po jej pełnym numerze lub numerze zamówienia.

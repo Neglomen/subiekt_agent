@@ -20,7 +20,7 @@ class PaymentFormRepository(BaseRepository):
             logger.info("PAYMENT CACHE MISS: Odświeżam cache form płatności...")
             ado_recordset = None
             try:
-                sql_query = "SELECT fp_Id, fp_Nazwa FROM sl_FormaPlatnosci ORDER BY fp_Nazwa"
+                sql_query = "SELECT fp_Id, fp_Nazwa, fp_Typ FROM sl_FormaPlatnosci ORDER BY fp_Nazwa"
                 ado_recordset, _ = self.ado_connection.Execute(sql_query)
                 
                 results = []
@@ -28,6 +28,7 @@ class PaymentFormRepository(BaseRepository):
                     results.append({
                         "id": ado_recordset.Fields("fp_Id").Value,
                         "name": ado_recordset.Fields("fp_Nazwa").Value,
+                        "type": ado_recordset.Fields("fp_Typ").Value,
                     })
                     ado_recordset.MoveNext()
                 

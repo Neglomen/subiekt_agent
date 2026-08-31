@@ -2,6 +2,7 @@ import logging
 import pywintypes
 from datetime import datetime, time
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Optional
 
 from app.config import AppConfig
 from app.exceptions import InvoiceNotFoundError, OutOfStockValidationError, SferaConnectionError
@@ -326,7 +327,9 @@ class DocumentService:
 
     def create_sales_invoice(self, invoice_data: SalesInvoiceCreateRequest) -> tuple[str, str]:
         """Tworzy Fakturę Sprzedaży (FS) w Subiekcie, wywołując skutek magazynowy."""
-        # Bezpieczne przycięcie do 30 znaków
+        # Skrót WYŁĄCZNIE do wyszukiwania duplikatu: find_by_original_number robi
+        # dok_Uwagi LIKE '%...%', więc prefiks wystarcza. Do samych uwag dokumentu trafia
+        # pełna referencja (patrz niżej) — nie obcinaj jej tutaj.
         safe_original_number = str(invoice_data.original_order_number)[:30] if invoice_data.original_order_number else ""
 
         logger.info(f"Rozpoczynam proces tworzenia FS dla zamówienia '{safe_original_number}'.")
@@ -608,21 +611,7 @@ class DocumentService:
     def correct_sales_invoice(self, invoice_data: SalesInvoiceCorrectRequest) -> tuple[str, Decimal, str]:
         """Tworzy Korektę Faktury Sprzedaży (KFS) w Subiekcie na podstawie pierwotnej FS."""
         logger.info(f"Rozpoczynam proces tworzenia KFS. Dokument pierwotny: '{invoice_data.original_sales_document_number}', zamówienie: '{invoice_data.original_order_number}'")
-        
-        # 1. Sprawdź, czy korekta dla tego zamówienia już istnieje
-        if invoice_data.original_order_number:
-            sql = f"""
-                SELECT d.dok_Id, d.dok_NrPelny 
-                FROM dok__Dokument d 
-                WHERE d.dok_Typ = 6 
-                  AND d.dok_Uwagi LIKE '%{invoice_data.original_order_number}%'
-            """
-            rs, _ = self._doc_repo.ado_connection.Execute(sql)
-            if not rs.EOF:
-                exist_num = rs.Fields("dok_NrPelny").Value
-                logger.info(f"Dokument KFS dla zamówienia '{invoice_data.original_order_number}' już istnieje w bazie: {exist_num}.")
-                return exist_num, Decimal("0.00"), "existed"
-        
+
         matches = self._doc_repo.find_fs_by_number_or_order(
             invoice_data.original_sales_document_number,
             invoice_data.original_order_number
@@ -630,110 +619,157 @@ class DocumentService:
         if not matches:
             identyfikator = invoice_data.original_sales_document_number or invoice_data.original_order_number or "brak"
             raise InvoiceNotFoundError(f"Brak faktury pierwotnej {identyfikator} w Subiekcie.")
-            
+
         base_fs_id = matches[0]['doc_id']
         base_fs_num = matches[0]['doc_number']
+
+        # Idempotencja po powiązaniu dokumentów (dok_DoDokId = SuDokument.DoDokumentuId),
+        # a nie po numerze zamówienia w uwagach: uwagi są obcinane do 500 znaków i nie ma
+        # gwarancji, że NaPodstawie w ogóle je przeniesie, więc stary warunek przepuszczał
+        # duplikaty korekt.
+        existing_kfs = self._doc_repo.find_kfs_for_base_document(base_fs_id)
+        if existing_kfs:
+            logger.info(f"Korekta do faktury {base_fs_num} już istnieje: {existing_kfs['doc_number']}.")
+            return existing_kfs['doc_number'], Decimal("0.00"), "existed"
+
         logger.info(f"Znaleziono fakturę bazową: {base_fs_num} (ID: {base_fs_id}). Tworzę KFS.")
 
         nowy_dok = None
         try:
             nowy_dok = self._sfera.o_subiekt.SuDokumentyManager.DodajKFS()
             nowy_dok.NaPodstawie(base_fs_id)
-            
-            try:
-                nowy_dok.Przyczyna = invoice_data.correction_reason
-            except Exception:
-                pass
-                
+
             issue_datetime = datetime.combine(invoice_data.issue_date, time(12, 0))
             nowy_dok.DataWystawienia = pywintypes.Time(issue_datetime)
-            
+
+            # FS wystawiamy licząc od cen brutto — korekta musi liczyć tak samo,
+            # inaczej Subiekt przelicza pozycje od netto i wartość rozjeżdża się o grosze.
+            try:
+                nowy_dok.LiczonyOdCenBrutto = True
+            except Exception as e:
+                logger.debug(f"Nie udało się ustawić LiczonyOdCenBrutto na KFS: {e}")
+
             notes_text = f"Przyczyna korekty: {invoice_data.correction_reason}"
             if nowy_dok.Uwagi:
                 nowy_dok.Uwagi = f"{nowy_dok.Uwagi}\n{notes_text}"[:500]
             else:
                 nowy_dok.Uwagi = notes_text[:500]
-                
-            product_mappings = self._config.mappings.product_mappings
-            service_map = self._config.mappings.service_mappings
-            
-            for item in invoice_data.line_items:
-                original_symbol = item.product_symbol
-                mapped_symbol = product_mappings.get(original_symbol, original_symbol)
-                normalized_mapped = normalize_symbol(mapped_symbol)
-                
-                target_pos = None
-                for p in nowy_dok.Pozycje:
-                    if normalize_symbol(p.TowarSymbol) == normalized_mapped:
-                        target_pos = p
-                        break
-                        
-                if not target_pos:
-                    for p in nowy_dok.Pozycje:
-                        pos_norm = normalize_symbol(p.TowarSymbol)
-                        if pos_norm in normalized_mapped or normalized_mapped in pos_norm:
-                            target_pos = p
-                            break
-                            
-                if not target_pos:
-                    # Fallback dla kosztów dostawy / transportu
-                    delivery_keywords = ["transport", "dostaw", "wysylk", "przesylk", "kurier", "oplata", "koszt"]
-                    orig_lower = original_symbol.lower()
-                    if any(kw in orig_lower for kw in delivery_keywords):
-                        delivery_symbols = [
-                            normalize_symbol(service_map.delivery_prepaid),
-                            normalize_symbol(service_map.delivery_cod)
-                        ]
-                        for p in nowy_dok.Pozycje:
-                            if normalize_symbol(p.TowarSymbol) in delivery_symbols:
-                                target_pos = p
-                                break
-                                
-                if not target_pos:
-                    # Fallback dla usług dodatkowych
-                    orig_lower = original_symbol.lower()
-                    for service_key, service_symbol in (service_map.additional_services or {}).items():
-                        if (service_key.lower() in orig_lower or 
-                            normalize_symbol(service_symbol) in normalized_mapped or 
-                            normalized_mapped in normalize_symbol(service_symbol)):
-                            for p in nowy_dok.Pozycje:
-                                if normalize_symbol(p.TowarSymbol) == normalize_symbol(service_symbol):
-                                    target_pos = p
-                                    break
-                            if target_pos:
-                                break
-                                
-                if not target_pos:
-                    logger.warning(f"Pozycja z symbolem '{original_symbol}' nie została znaleziona na fakturze pierwotnej. Pomijam.")
-                    continue
-                    
-                if item.new_quantity is not None:
-                    target_pos.IloscJmPoKorekcie = float(item.new_quantity)
-                elif item.corrected_quantity is not None:
-                    target_pos.IloscJmPoKorekcie = float(item.corrected_quantity)
-                    
-                if item.new_gross_price is not None:
+
+            # Ujęcie korekty w VAT. Domyślnie gtaUjecieKorektyTypWDacieWystawieniaKorekty (2)
+            # — tak rozlicza się zwrot uzgodniony z nabywcą. Wartość 1 to ujęcie w dacie
+            # faktury pierwotnej, 3 wymaga dodatkowo ustawienia UjecieKorektyData.
+            try:
+                nowy_dok.UjecieKorektyTyp = 2
+            except Exception as e:
+                logger.debug(f"Nie udało się ustawić UjecieKorektyTyp na KFS: {e}")
+
+            # Korekty nie podlegają fiskalizacji. Ustawiamy to jawnie, bo NaPodstawie
+            # kopiuje nagłówek faktury pierwotnej, a ta po wydruku ma RejestrujNaUF = True.
+            try:
+                nowy_dok.RejestrujNaUF = False
+            except Exception as e:
+                logger.debug(f"Nie udało się wyłączyć RejestrujNaUF na KFS: {e}")
+
+            # KSeF: korekta faktury B2B idzie do KSeF tą samą flagą co faktura pierwotna
+            # (dok_CzekaNaKSeF) i powinna wskazywać numer KSeF dokumentu źródłowego.
+            ksef_b2b = False
+            if self._config.mappings.ksef_enabled:
+                ksef_b2b = bool(self._doc_repo.get_payer_nip(base_fs_id))
+
+            if ksef_b2b:
+                try:
+                    nowy_dok.FormaDokumentu = 1  # gtaFormaDokumentuFakturaKSeF
+                except Exception as e:
+                    logger.debug(f"Nie udało się ustawić FormaDokumentu na KFS: {e}")
+                try:
+                    nowy_dok.RejestrujWKSeF = True
+                except Exception as e:
+                    logger.debug(f"Zignorowano próbę ustawienia RejestrujWKSeF na KFS: {e}")
+
+                source_ksef = self._get_source_ksef_number(base_fs_num)
+                if source_ksef:
                     try:
-                        target_pos.CenaBruttoPrzedRabatemPoKorekcie = float(item.new_gross_price)
-                    except AttributeError:
-                        vat_rate = 23.0
-                        try:
-                            vat_rate = float(target_pos.StawkaVatProcent)
-                        except AttributeError:
-                            try:
-                                vat_rate = float(target_pos.StawkaVat)
-                            except AttributeError:
-                                pass
-                        net_price = float(item.new_gross_price) / (1.0 + (vat_rate / 100.0))
-                        target_pos.CenaNettoPrzedRabatemPoKorekcie = round(net_price, 4)
-                elif item.new_net_price is not None:
-                    target_pos.CenaNettoPrzedRabatemPoKorekcie = float(item.new_net_price)
+                        nowy_dok.DoDokumentuNumerKSeF = source_ksef
+                        logger.info(f"KFS powiązana z numerem KSeF faktury pierwotnej: {source_ksef}")
+                    except Exception as e:
+                        logger.warning(f"Nie udało się ustawić DoDokumentuNumerKSeF: {e}")
+                else:
+                    logger.warning(
+                        f"Faktura {base_fs_num} nie ma numeru KSeF — korekta pójdzie bez powiązania "
+                        "z dokumentem źródłowym."
+                    )
+
+            # SuDokument nie ma atrybutu z tekstem przyczyny korekty — Sfera przyjmuje
+            # wyłącznie SuPozycjaKorekty.PrzyczynaKorektyId wskazujący wpis słownika
+            # sl_PrzyczynaKorekty. Wolny tekst z formularza zostaje w uwagach.
+            reason_id = self._resolve_correction_reason_id(invoice_data.correction_reason)
+
+            # Jedna pozycja żądania może odpowiadać wielu pozycjom dokumentu: komplet
+            # rozłożony na składniki oraz rozbicie fiskalne ceny na dwie linie różniące
+            # się groszem (patrz create_sales_invoice). Dlatego grupujemy pozycje po
+            # TowarId i korygujemy WSZYSTKIE pasujące, a nie pierwszą znalezioną.
+            positions_by_product = {}
+            for p in nowy_dok.Pozycje:
+                try:
+                    towar_id = int(p.TowarId)
+                except (TypeError, ValueError):
+                    logger.warning(f"Pozycja '{p.TowarSymbol}' bez TowarId (usługa jednorazowa?) — pomijam w dopasowaniu.")
+                    continue
+                positions_by_product.setdefault(towar_id, []).append(p)
+
+            corrected_products = set()
+            unmatched = []
+
+            for item in invoice_data.line_items:
+                details = self._resolve_correction_product(item.product_symbol)
+                if not details:
+                    unmatched.append(item.product_symbol)
+                    continue
+
+                target_ids = self._expand_to_document_products(details)
+                present_ids = [tid for tid in target_ids if tid in positions_by_product]
+
+                if not present_ids:
+                    unmatched.append(item.product_symbol)
+                    continue
+
+                if any(tid in corrected_products for tid in present_ids):
+                    logger.warning(
+                        f"Symbol '{item.product_symbol}' wskazuje towar skorygowany już przez wcześniejszą "
+                        "pozycję żądania. Pomijam, żeby nie nadpisać poprzedniej korekty."
+                    )
+                    continue
+
+                groups = [positions_by_product[tid] for tid in present_ids]
+                self._apply_correction_to_positions(groups, item, reason_id)
+                corrected_products.update(present_ids)
+
+            if unmatched:
+                # Cicha korekta zerowa jest gorsza niż błąd: dokument powstawał, magazyn
+                # się nie ruszał, a API zwracało sukces.
+                raise ValueError(
+                    f"Nie odnaleziono na fakturze {base_fs_num} pozycji dla: {', '.join(unmatched)}. "
+                    "Sprawdź mapowanie symboli towarów — korekta nie została wystawiona."
+                )
+
+            if not corrected_products:
+                raise ValueError(
+                    f"Żadna pozycja faktury {base_fs_num} nie została zmieniona — korekta byłaby pusta."
+                )
 
             nowy_dok.Przelicz()
             kwota_do_zaplaty = Decimal(str(nowy_dok.KwotaDoZaplaty))
-            
+            logger.info(
+                f"KFS: skorygowano {len(corrected_products)} towarów, "
+                f"KwotaDoZaplaty wg Sfery = {kwota_do_zaplaty} zł."
+            )
+
+            # TODO: potwierdzić w dokumentacji Sfery znak KwotaDoZaplaty na KFS. Ścieżka
+            # KFZ używa wartości ze znakiem (patrz create_purchase_invoice), tutaj
+            # zachowujemy dotychczasowe abs(), żeby nie zmieniać nieudokumentowanej
+            # semantyki rozliczenia przy okazji pozostałych poprawek.
             self._handle_kfs_payment(nowy_dok, invoice_data, abs(kwota_do_zaplaty))
-            
+
             nowy_dok.Zapisz()
             if not nowy_dok.Identyfikator:
                 try:
@@ -741,7 +777,7 @@ class DocumentService:
                 except Exception as err:
                     logger.warning(f"Nie udało się wywołać WypiszBledy: {err}")
                 raise ValueError("Nie udało się zapisać dokumentu KFS w Subiekcie.")
-            
+
             try:
                 doc_id = nowy_dok.Identyfikator
                 sql = f"SELECT dok_NrPelny FROM dok__Dokument WITH (NOLOCK) WHERE dok_Id = {doc_id}"
@@ -753,11 +789,20 @@ class DocumentService:
             except Exception as e:
                 logger.warning(f"Nie udało się pobrać numeru KFS za pomocą SQL: {e}. Używam obiektu COM.")
                 utworzony_numer = nowy_dok.NumerPelny
-                
+
+            if ksef_b2b:
+                try:
+                    self._mark_for_ksef(utworzony_numer)
+                except Exception as ksef_err:
+                    logger.warning(
+                        f"Nie udało się oznaczyć korekty '{utworzony_numer}' do KSeF: {ksef_err}. "
+                        "Korekta została utworzona poprawnie."
+                    )
+
             logger.info(f"SUKCES! Pomyślnie utworzono KFS: {utworzony_numer}, Wartość różnicy: {kwota_do_zaplaty}")
 
             return utworzony_numer, kwota_do_zaplaty, "created"
-            
+
         except pywintypes.com_error as e:
             try:
                 raw_message = e.args[2][2] if e.args and len(e.args) > 2 and e.args[2] else None
@@ -774,133 +819,303 @@ class DocumentService:
                 except Exception:
                     logger.warning("Nie udało się zamknąć obiektu KFS.")
 
+    def _resolve_correction_product(self, raw_symbol: str) -> Optional[dict]:
+        """
+        Zamienia symbol z żądania korekty na wpis kartoteki ({'id', 'type'}).
+
+        Rozumie te same sentinele usług co wystawianie FS ($SERVICE_*), dzięki czemu
+        korekta trafia dokładnie w pozycję, którą FS wcześniej dodała. Wcześniej korekta
+        dopasowywała pozycje po tekstowej nazwie oferty z marketplace'u — działało to
+        tylko dla nazw obecnych w product_mappings z config.json.
+        """
+        product_map = self._product_repo.get_normalized_map()
+        service_map = self._config.mappings.service_mappings
+
+        if raw_symbol.startswith('$SERVICE_'):
+            final_symbol = None
+            if raw_symbol == '$SERVICE_DELIVERY_PREPAID':
+                final_symbol = service_map.delivery_prepaid
+            elif raw_symbol == '$SERVICE_DELIVERY_COD':
+                final_symbol = service_map.delivery_cod
+            elif raw_symbol.startswith('$SERVICE_ADDITIONAL_'):
+                service_id = raw_symbol.replace('$SERVICE_ADDITIONAL_', '')
+                final_symbol = (service_map.additional_services or {}).get(service_id)
+
+            if not final_symbol:
+                logger.warning(f"Brak mapowania usługi dla sentinela '{raw_symbol}' w config.json.")
+                return None
+            return product_map.get(normalize_symbol(final_symbol))
+
+        mapped_symbol = self._config.mappings.product_mappings.get(raw_symbol, raw_symbol)
+        normalized = normalize_symbol(mapped_symbol)
+        details = product_map.get(normalized)
+        if details:
+            return details
+
+        # Dopasowanie rozmyte tylko wtedy, gdy jest jednoznaczne — przy wielu kandydatach
+        # korekta trafiłaby w przypadkowy towar (dokładnie to robiła poprzednia wersja).
+        candidates = [norm for norm in product_map if norm and (norm in normalized or normalized in norm)]
+        if len(candidates) == 1:
+            logger.info(f"Symbol '{raw_symbol}' dopasowany rozmyto do '{candidates[0]}'.")
+            return product_map.get(candidates[0])
+        if len(candidates) > 1:
+            logger.warning(f"Symbol '{raw_symbol}' pasuje rozmyto do {len(candidates)} towarów — odmawiam zgadywania.")
+        return None
+
+    def _get_source_ksef_number(self, doc_number: str) -> Optional[str]:
+        """
+        Odczytuje numer KSeF faktury pierwotnej przez Sferę (SuDokument.NumerKSeF).
+
+        Czytamy przez COM, a nie SQL-em, bo numer KSeF leży w bazie w osobnej tabeli
+        pod identyfikatorem (dok_NumerKSeFId) — atrybut Sfery jest tu jedynym pewnym źródłem.
+        """
+        dok = None
+        try:
+            dok = self._sfera.o_subiekt.SuDokumentyManager.Wczytaj(doc_number)
+            numer = dok.NumerKSeF
+            return str(numer).strip() if numer and str(numer).strip() else None
+        except Exception as e:
+            logger.warning(f"Nie udało się odczytać numeru KSeF dokumentu '{doc_number}': {e}")
+            return None
+        finally:
+            if dok:
+                try:
+                    dok.Zamknij()
+                except Exception:
+                    pass
+
+    def _expand_to_document_products(self, details: dict) -> list:
+        """
+        Zwraca identyfikatory towarów, których należy szukać na dokumencie.
+
+        Komplet (tw_Rodzaj = 8) nie trafia na FS jako jedna pozycja — create_sales_invoice
+        rozkłada go na składniki, więc korekta musi szukać składników, nie kompletu.
+        """
+        product_id = int(details["id"])
+        if details.get("type") != 8:
+            return [product_id]
+
+        try:
+            components = self._product_repo.get_bundle_components(product_id)
+        except Exception as e:
+            logger.warning(f"Nie udało się pobrać składników kompletu ID={product_id}: {e}")
+            return [product_id]
+
+        if not components:
+            return [product_id]
+
+        component_ids = [int(c["id"]) for c in components]
+        logger.info(f"Komplet ID={product_id} rozłożony na składniki: {component_ids}")
+        return component_ids
+
+    def _apply_correction_to_positions(self, groups, item, reason_id: Optional[int]) -> None:
+        """
+        Przenosi jedną pozycję żądania na pasujące pozycje dokumentu korekty.
+
+        `groups` to lista grup pozycji — po jednej na towar znaleziony na dokumencie
+        (komplet daje kilka grup, po jednej na składnik; wewnątrz grupy bywa kilka
+        pozycji tego samego towaru z rozbicia fiskalnego).
+
+        Ilość dzielimy dwustopniowo: proporcją "po korekcie / przed korektą" między grupy
+        (to poprawnie skaluje składniki kompletu), a wewnątrz grupy rozdzielamy ją
+        wypełniając pozycje po kolei — patrz _distribute_quantity.
+        """
+        symbol = item.product_symbol
+        all_positions = [p for group in groups for p in group]
+
+        target_qty = item.target_quantity
+        if target_qty is not None:
+            if item.original_quantity is not None and item.original_quantity > 0:
+                base_qty = float(item.original_quantity)
+            else:
+                base_qty = sum(float(p.IloscJm) for p in all_positions)
+
+            if base_qty > 0:
+                ratio = float(target_qty) / base_qty
+                for group in groups:
+                    group_sum = sum(float(p.IloscJm) for p in group)
+                    self._distribute_quantity(group, round(group_sum * ratio, 4))
+                logger.info(
+                    f"Korekta ilości '{symbol}': {base_qty} -> {target_qty} "
+                    f"(proporcja {ratio:.4f} na {len(all_positions)} poz. w {len(groups)} grupach)"
+                )
+            else:
+                logger.warning(f"Korekta ilości '{symbol}' pominięta — ilość pierwotna wynosi 0.")
+
+        target_price = item.target_gross_price
+        if target_price is not None:
+            if item.original_gross_price is not None and item.original_gross_price > 0:
+                ratio = float(target_price) / float(item.original_gross_price)
+                for p in all_positions:
+                    p.CenaBruttoPrzedRabatemPoKorekcie = round(float(p.CenaBruttoPrzedRabatem) * ratio, 2)
+                logger.info(
+                    f"Korekta ceny '{symbol}': {item.original_gross_price} -> {target_price} zł brutto "
+                    f"(proporcja {ratio:.4f} na {len(all_positions)} poz. dokumentu)"
+                )
+            elif len(all_positions) == 1:
+                all_positions[0].CenaBruttoPrzedRabatemPoKorekcie = float(target_price)
+                logger.info(f"Korekta ceny '{symbol}': ustawiono {target_price} zł brutto.")
+            else:
+                logger.warning(
+                    f"Korekta ceny '{symbol}' pominięta — bez original_gross_price nie da się "
+                    f"rozdzielić nowej ceny na {len(all_positions)} pozycji dokumentu."
+                )
+        elif item.new_net_price is not None:
+            if len(all_positions) == 1:
+                all_positions[0].CenaNettoPrzedRabatemPoKorekcie = float(item.new_net_price)
+                logger.info(f"Korekta ceny '{symbol}': ustawiono {item.new_net_price} zł netto.")
+            else:
+                logger.warning(
+                    f"Korekta ceny netto '{symbol}' pominięta — pozycja odpowiada "
+                    f"{len(all_positions)} pozycjom dokumentu."
+                )
+
+        if reason_id is not None:
+            for p in all_positions:
+                try:
+                    p.PrzyczynaKorektyId = reason_id
+                except Exception as e:
+                    logger.debug(f"Nie udało się ustawić PrzyczynaKorektyId na pozycji '{symbol}': {e}")
+
+    def _distribute_quantity(self, positions, target: float) -> None:
+        """
+        Rozdziela docelową ilość między pozycje tego samego towaru.
+
+        Jeden towar bywa na dokumencie w dwóch pozycjach różniących się o grosz
+        (rozbicie fiskalne w create_sales_invoice — patrz app/pricing.py). Wypełniamy
+        pozycje po kolei do ich pierwotnej ilości zamiast skalować każdą proporcjonalnie:
+        inaczej zwrot 1 z 2 sztuk dałby dwie pozycje po pół sztuki.
+        """
+        remaining = max(target, 0.0)
+        for p in positions:
+            available = float(p.IloscJm)
+            take = min(available, remaining)
+            p.IloscJmPoKorekcie = round(take, 4)
+            remaining = round(remaining - take, 4)
+
+        if remaining > 0:
+            logger.warning(
+                f"Ilość docelowa przekracza ilość na dokumencie o {remaining} — "
+                "korekta nie może zwiększyć sprzedaży ponad pierwotną fakturę."
+            )
+
+    def _resolve_correction_reason_id(self, reason_text: str) -> Optional[int]:
+        """
+        Mapuje wolny tekst przyczyny korekty na pkr_Id ze słownika sl_PrzyczynaKorekty.
+
+        Zwraca None, gdy słownik jest pusty albo nie ma dopasowania — przyczyna zostaje
+        wtedy wyłącznie w uwagach dokumentu, ale korekta i tak się wystawia.
+        """
+        if not reason_text:
+            return None
+
+        reasons = self._doc_repo.get_correction_reasons()
+        if not reasons:
+            logger.warning(
+                "Słownik 'Przyczyny korekty' w Subiekcie jest pusty lub niedostępny — "
+                "przyczyna trafi wyłącznie do uwag dokumentu."
+            )
+            return None
+
+        normalized = normalize_symbol(reason_text)
+
+        for entry in reasons:
+            if normalize_symbol(entry.get("name") or "") == normalized:
+                return int(entry["id"])
+
+        for entry in reasons:
+            name_norm = normalize_symbol(entry.get("name") or "")
+            if name_norm and (name_norm in normalized or normalized in name_norm):
+                logger.info(f"Przyczynę '{reason_text}' dopasowano do słownikowej '{entry.get('name')}'.")
+                return int(entry["id"])
+
+        logger.warning(
+            f"Przyczyny korekty '{reason_text}' nie ma w słowniku Subiekta "
+            f"(dostępne: {[e.get('name') for e in reasons]}). Zostanie tylko w uwagach."
+        )
+        return None
+
     def _handle_kfs_payment(self, document_obj, request, kwota_zwrotu):
-        """Obsługuje płatność/zwrot na dokumencie KFS."""
-        if not request.payment_type:
-            document_obj.PlatnoscGotowkaKwota = float(kwota_zwrotu)
-            logger.info(f"Zwrot KFS: brak payment_type -> domyślnie gotówka ({kwota_zwrotu} zł)")
+        """
+        Ustawia formę zwrotu na dokumencie KFS.
+
+        Formy nie zgadujemy: albo dostajemy jej identyfikator ze słownika Subiekta
+        (payment_form_id), albo jedną z dwóch form bezidentyfikatorowych (gotówka /
+        "zapłacono przelewem"), albo zgłaszamy błąd walidacji. Poprzednia wersja brała
+        pierwszą z brzegu formę o fp_Typ == 0 z nieuporządkowanego wyniku SQL, przez co
+        na korekcie lądowała przypadkowa metoda rozliczenia.
+        """
+        kwota = float(kwota_zwrotu)
+
+        if request.payment_form_id is not None:
+            forms = self._get_payment_forms_map()
+            match = next(
+                ((name, data) for name, data in forms.items() if data["id"] == request.payment_form_id),
+                None
+            )
+            if not match:
+                raise ValueError(
+                    f"Forma płatności o identyfikatorze {request.payment_form_id} nie istnieje w Subiekcie GT."
+                )
+            self._set_kfs_payment_form(document_obj, request, match[0], match[1], kwota)
             return
 
-        payment_type_upper = request.payment_type.upper()
+        key = (request.payment_type or "").strip().upper()
 
-        if "GOTÓWKA" in payment_type_upper or "CASH" in payment_type_upper:
-            document_obj.PlatnoscGotowkaKwota = float(kwota_zwrotu)
-            logger.info(f"Zwrot KFS: gotówka ({kwota_zwrotu} zł)")
+        if not key or "GOT" in key or "CASH" in key:
+            document_obj.PlatnoscGotowkaKwota = kwota
+            logger.info(f"Zwrot KFS: gotówka ({kwota} zł)")
+            return
 
-        elif "PRZELEW" in payment_type_upper or "TRANSFER" in payment_type_upper:
-            if request.payment_due_date:
-                # Przelew odroczony (z terminem) — szukamy formy typu 0 (odroczonej)
-                all_payment_forms = self._get_payment_forms_map()
-                deferred_form = None
-                for name, data in all_payment_forms.items():
-                    if data["type"] == 0:
-                        deferred_form = data
-                        break
-                
-                if deferred_form:
-                    document_obj.PlatnoscKredytId = deferred_form["id"]
-                    document_obj.PlatnoscKredytKwota = float(kwota_zwrotu)
-                    due_datetime = datetime.combine(request.payment_due_date, time(23, 59))
-                    document_obj.PlatnoscKredytTermin = pywintypes.Time(due_datetime)
-                    logger.info(f"Zwrot KFS: przelew odroczony przez formę ID={deferred_form['id']} ({kwota_zwrotu} zł, termin={request.payment_due_date})")
-                else:
-                    document_obj.PlatnoscPrzelewKwota = float(kwota_zwrotu)
-                    logger.warning("Zwrot KFS: brak formy płatności odroczonej w Subiekcie. Ustawiono przelew natychmiastowy.")
-            else:
-                document_obj.PlatnoscPrzelewKwota = float(kwota_zwrotu)
-                logger.info(f"Zwrot KFS: przelew natychmiastowy ({kwota_zwrotu} zł)")
+        if "PRZELEW" in key or "TRANSFER" in key:
+            # PlatnoscPrzelewKwota odpowiada formie "Zapłacono przelewem" — rozliczenie
+            # natychmiastowe. Zwrot z terminem wymaga wskazania konkretnej formy
+            # odroczonej przez payment_form_id.
+            document_obj.PlatnoscPrzelewKwota = kwota
+            logger.info(f"Zwrot KFS: zapłacono przelewem ({kwota} zł)")
+            return
 
-        elif any(kw in payment_type_upper for kw in ["KARTA", "ONLINE", "PAYU", "PRZELEWY24", "CARD"]):
-            # Płatność kartą / online — szukamy odpowiedniej formy w Subiekcie
-            all_payment_forms = self._get_payment_forms_map()
-            
-            # Próbujemy znaleźć formę płatności kartą:
-            # 1. Sprawdź mapowanie w config.json (np. "ONLINE" -> "Allegro Delivery")
-            payment_map = self._config.mappings.payment_type_mappings
-            mapped_name = payment_map.get(payment_type_upper)
-            
-            payment_form_details = None
-            if mapped_name:
-                payment_form_details = all_payment_forms.get(mapped_name.upper())
-            
-            # 2. Jeśli brak mapowania, szukaj bezpośrednio po nazwie formy
-            if not payment_form_details:
-                # Szukaj formy pasującej do klucza (np. "PAYU", "PRZELEWY24")
-                for form_name, form_data in all_payment_forms.items():
-                    if payment_type_upper in form_name or form_name in payment_type_upper:
-                        payment_form_details = form_data
-                        mapped_name = form_name
-                        break
-            
-            # 3. Domyślnie szukaj PayU lub Przelewy24
-            if not payment_form_details:
-                for fallback_name in ["PAYU", "PRZELEWY24", "ALLEGRO DELIVERY"]:
-                    if fallback_name in all_payment_forms:
-                        payment_form_details = all_payment_forms[fallback_name]
-                        mapped_name = fallback_name
-                        break
-            
-            if payment_form_details:
-                payment_form_id = payment_form_details["id"]
-                payment_form_type = payment_form_details["type"]
-                if payment_form_type == 1:
-                    document_obj.PlatnoscKartaId = payment_form_id
-                    document_obj.PlatnoscKartaKwota = float(kwota_zwrotu)
-                    logger.info(f"Zwrot KFS: karta/online przez formę '{mapped_name}' "
-                                f"(ID={payment_form_id}, {kwota_zwrotu} zł)")
-                else:
-                    document_obj.PlatnoscKredytId = payment_form_id
-                    document_obj.PlatnoscKredytKwota = float(kwota_zwrotu)
-                    if request.payment_due_date:
-                        due_datetime = datetime.combine(request.payment_due_date, time(23, 59))
-                        document_obj.PlatnoscKredytTermin = pywintypes.Time(due_datetime)
-                    logger.info(f"Zwrot KFS: kredyt przez formę '{mapped_name}' "
-                                f"(ID={payment_form_id}, {kwota_zwrotu} zł)")
-            else:
-                # Ostateczny fallback — ustawiamy kwotę kredytową bez formy
-                document_obj.PlatnoscKredytKwota = float(kwota_zwrotu)
-                logger.warning(f"KFS payment: nie znaleziono formy płatności kartą w Subiekcie. "
-                               f"Ustawiono domyślny zwrot kredytowy ({kwota_zwrotu} zł).")
+        forms = self._get_payment_forms_map()
+        mapped_name = self._config.mappings.payment_type_mappings.get(key, key).strip()
+        form_data = forms.get(mapped_name.upper())
+        if not form_data:
+            raise ValueError(
+                f"Nie można ustalić formy zwrotu dla '{request.payment_type}'. "
+                f"Podaj payment_form_id albo użyj 'gotówka'/'przelew'. "
+                f"Formy dostępne w Subiekcie: {sorted(forms.keys())}"
+            )
+        self._set_kfs_payment_form(document_obj, request, mapped_name, form_data, kwota)
 
-        else:
-            # Inne/nieznane formy — próbujemy mapowanie z config.json
-            payment_map = self._config.mappings.payment_type_mappings
-            payment_type_name = payment_map.get(payment_type_upper)
-            
-            if not payment_type_name:
-                # Brak mapowania — szukaj bezpośrednio w formach płatności
-                all_payment_forms = self._get_payment_forms_map()
-                payment_form_details = all_payment_forms.get(payment_type_upper)
-                if payment_form_details:
-                    payment_type_name = payment_type_upper
-                else:
-                    # Domyślnie przelew
-                    document_obj.PlatnoscPrzelewKwota = float(kwota_zwrotu)
-                    logger.warning(f"KFS payment: nieznany typ '{request.payment_type}', "
-                                   f"ustawiono domyślnie przelew ({kwota_zwrotu} zł).")
-                    return
-            
-            all_payment_forms = self._get_payment_forms_map()
-            payment_form_details = all_payment_forms.get(payment_type_name.upper())
-            
-            if payment_form_details:
-                payment_form_id = payment_form_details["id"]
-                payment_form_type = payment_form_details["type"]
-                if payment_form_type == 1:
-                    document_obj.PlatnoscKartaId = payment_form_id
-                    document_obj.PlatnoscKartaKwota = float(kwota_zwrotu)
-                    logger.info(f"Zwrot KFS: karta/online przez formę '{payment_type_name}' (ID={payment_form_id}, {kwota_zwrotu} zł)")
-                else:
-                    document_obj.PlatnoscKredytId = payment_form_id
-                    document_obj.PlatnoscKredytKwota = float(kwota_zwrotu)
-                    if request.payment_due_date:
-                        due_datetime = datetime.combine(request.payment_due_date, time(23, 59))
-                        document_obj.PlatnoscKredytTermin = pywintypes.Time(due_datetime)
-                    logger.info(f"Zwrot KFS: forma '{payment_type_name}' (ID={payment_form_id}, {kwota_zwrotu} zł)")
-            else:
-                document_obj.PlatnoscKredytKwota = float(kwota_zwrotu)
-                logger.warning(f"KFS payment: brak formy '{payment_type_name}' w Subiekcie. "
-                               f"Domyślny zwrot kredytowy ({kwota_zwrotu} zł).")
+    def _set_kfs_payment_form(self, document_obj, request, form_name, form_data, kwota) -> None:
+        """Przypisuje konkretną formę płatności ze słownika Subiekta do dokumentu KFS."""
+        if self._is_card_payment_form(form_name, form_data["type"]):
+            document_obj.PlatnoscKartaId = form_data["id"]
+            document_obj.PlatnoscKartaKwota = kwota
+            logger.info(f"Zwrot KFS: karta '{form_name}' (ID={form_data['id']}, {kwota} zł)")
+            return
+
+        document_obj.PlatnoscKredytId = form_data["id"]
+        document_obj.PlatnoscKredytKwota = kwota
+        if request.payment_due_date:
+            due_datetime = datetime.combine(request.payment_due_date, time(23, 59))
+            document_obj.PlatnoscKredytTermin = pywintypes.Time(due_datetime)
+        logger.info(
+            f"Zwrot KFS: płatność odroczona '{form_name}' "
+            f"(ID={form_data['id']}, {kwota} zł, termin={request.payment_due_date})"
+        )
+
+    def _is_card_payment_form(self, form_name: str, form_type) -> bool:
+        """
+        Rozstrzyga, czy forma płatności jest kartowa.
+
+        Pytamy słownik Subiekta — tą samą metodą co przy wystawianiu FS. fp_Typ służy
+        wyłącznie jako zapasowa heurystyka, gdy słownik jest niedostępny.
+        """
+        try:
+            return bool(self._sfera.o_subiekt.Slowniki.FormyPlatnosciKarta.Istnieje(form_name))
+        except Exception as e:
+            logger.warning(f"Nie udało się sprawdzić słownika kart płatniczych dla '{form_name}': {e}")
+            return form_type == 1
 
     # --- PRYWATNE METODY POMOCNICZE DLA FS ---
 

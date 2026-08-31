@@ -99,12 +99,31 @@ class SalesInvoiceCreateResponse(BaseModel):
 # --- SCHEMATY DLA KOREKT SPRZEDAŻY (KFS) ---
 
 class SalesInvoiceCorrectLineItem(BaseModel):
-    """Model pozycji na korekcie faktury sprzedaży."""
-    product_symbol: str = Field(..., description="Symbol towaru w Subiekcie.")
+    """
+    Model pozycji na korekcie faktury sprzedaży.
+
+    Ilości i ceny podajemy w ujęciu "przed -> po". Jedna pozycja żądania może
+    odpowiadać kilku pozycjom na FS (składniki kompletu, rozbicie fiskalne ceny
+    na dwie linie), dlatego agent skaluje pozycje dokumentu proporcją
+    docelowa/pierwotna zamiast wpisywać wartość wprost.
+    """
+    product_symbol: str = Field(..., description="Symbol towaru w Subiekcie albo sentinel usługi ($SERVICE_DELIVERY_PREPAID, $SERVICE_DELIVERY_COD, $SERVICE_ADDITIONAL_<id>).")
+    original_quantity: Optional[Decimal] = Field(None, description="Ilość przed korektą (z pierwotnej FS). Wymagana do poprawnej korekty kompletów.")
     new_quantity: Optional[Decimal] = Field(None, description="Nowa docelowa ilość towaru po korekcie.")
-    corrected_quantity: Optional[Decimal] = Field(None, description="Nowa docelowa ilość towaru po korekcie (ilość po skorygowaniu).")
+    corrected_quantity: Optional[Decimal] = Field(None, description="Nowa docelowa ilość towaru po korekcie (alias dla new_quantity).")
+    original_gross_price: Optional[Decimal] = Field(None, description="Cena brutto przed korektą. Wymagana do poprawnej korekty wartościowej kompletów.")
     new_gross_price: Optional[Decimal] = Field(None, description="Nowa cena brutto po korekcie.")
+    corrected_gross_price: Optional[Decimal] = Field(None, description="Nowa cena brutto po korekcie (alias dla new_gross_price).")
     new_net_price: Optional[Decimal] = Field(None, description="Nowa cena netto po korekcie.")
+    vat_rate: Optional[Decimal] = Field(None, description="Stawka VAT pozycji (informacyjnie).")
+
+    @property
+    def target_quantity(self) -> Optional[Decimal]:
+        return self.new_quantity if self.new_quantity is not None else self.corrected_quantity
+
+    @property
+    def target_gross_price(self) -> Optional[Decimal]:
+        return self.new_gross_price if self.new_gross_price is not None else self.corrected_gross_price
 
 class SalesInvoiceCorrectRequest(BaseModel):
     """Model żądania do utworzenia Korekty Faktury Sprzedaży (KFS)."""
@@ -114,8 +133,9 @@ class SalesInvoiceCorrectRequest(BaseModel):
     correction_reason: str = Field(..., description="Przyczyna korekty.")
     issue_date: date = Field(..., description="Data wystawienia korekty.")
     
-    payment_type: Optional[str] = Field(None, description="Forma płatności dla zwrotu (np. 'przelew', 'gotówka').")
-    payment_due_date: Optional[date] = Field(None, description="Termin płatności dla zwrotu.")
+    payment_form_id: Optional[int] = Field(None, description="Identyfikator formy płatności ze słownika Subiekta (sl_FormaPlatnosci.fp_Id). Ma pierwszeństwo przed payment_type.")
+    payment_type: Optional[str] = Field(None, description="Forma zwrotu bez identyfikatora: 'gotówka' albo 'przelew' (zapłacono przelewem).")
+    payment_due_date: Optional[date] = Field(None, description="Termin płatności odroczonej dla zwrotu (używany razem z payment_form_id).")
     
     line_items: List[SalesInvoiceCorrectLineItem] = Field(..., min_length=1, description="Lista pozycji na korekcie.")
 
@@ -138,6 +158,7 @@ class ProductSearchResponse(BaseModel):
 class PaymentFormRead(BaseModel):
     id: int
     name: str
+    type: Optional[int] = Field(None, description="Wartość sl_FormaPlatnosci.fp_Typ — pozwala odróżnić formy kartowe od odroczonych.")
 
 class AllMappingsRead(BaseModel):
     """Model reprezentujący całą sekcję mapowań w config.json."""
