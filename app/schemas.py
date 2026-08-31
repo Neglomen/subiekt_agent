@@ -130,6 +130,7 @@ class SalesInvoiceCorrectRequest(BaseModel):
     original_sales_document_number: Optional[str] = Field(None, description="Pełny numer korygowanej Faktury Sprzedaży (FS) w Subiekcie.")
     original_order_number: Optional[str] = Field(None, description="Numer oryginalnego zamówienia klienta (do wyszukania FS).")
     
+    correction_type: Optional[str] = Field(None, description="Wariant korekty: FULL, PARTIAL_QUANTITY, PARTIAL_VALUE. Dla FULL agent zeruje wszystkie pozycje faktury bez dopasowywania symboli.")
     correction_reason: str = Field(..., description="Przyczyna korekty.")
     issue_date: date = Field(..., description="Data wystawienia korekty.")
     

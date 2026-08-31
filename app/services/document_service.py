@@ -726,54 +726,70 @@ class DocumentService:
             logger.debug(f"Pozycje na KFS: {document_symbols}")
 
             corrected_products = set()
-            unmatched = []
 
-            for item in invoice_data.line_items:
-                details, normalized_symbol = self._resolve_correction_product(item.product_symbol)
-                target_ids = self._expand_to_document_products(details) if details else []
-                present_ids = [tid for tid in target_ids if tid in positions_by_product]
-
-                if not present_ids:
-                    # Kartoteka Subiekta potrafi zawierać bliźniacze wpisy różniące się
-                    # samymi białymi znakami ('CMO-MP012OC-BK' i 'CMO-MP012OC-BK ') —
-                    # osobne tw_Id, ten sam klucz po normalizacji. get_normalized_map
-                    # zostawia wtedy pierwszy napotkany, który nie musi być tym z faktury.
-                    # Szukamy więc po symbolu wśród pozycji TEJ faktury: zakres jest wąski,
-                    # więc nie grozi to trafieniem w przypadkowy towar.
-                    for candidate_key in (normalized_symbol, normalize_symbol(item.product_symbol)):
-                        if not candidate_key:
-                            continue
-                        present_ids = positions_by_symbol.get(candidate_key, [])
-                        if present_ids:
-                            logger.info(
-                                f"Symbol '{item.product_symbol}' dopasowany po symbolu pozycji dokumentu "
-                                f"(TowarId={present_ids}) — kartoteka ma prawdopodobnie bliźniacze wpisy."
-                            )
-                            break
-
-                if not present_ids:
-                    unmatched.append(item.product_symbol)
-                    continue
-
-                if any(tid in corrected_products for tid in present_ids):
-                    logger.warning(
-                        f"Symbol '{item.product_symbol}' wskazuje towar skorygowany już przez wcześniejszą "
-                        "pozycję żądania. Pomijam, żeby nie nadpisać poprzedniej korekty."
-                    )
-                    continue
-
-                groups = [positions_by_product[tid] for tid in present_ids]
-                self._apply_correction_to_positions(groups, item, reason_id)
-                corrected_products.update(present_ids)
-
-            if unmatched:
-                # Cicha korekta zerowa jest gorsza niż błąd: dokument powstawał, magazyn
-                # się nie ruszał, a API zwracało sukces.
-                raise ValueError(
-                    f"Nie odnaleziono na fakturze {base_fs_num} pozycji dla: {', '.join(unmatched)}. "
-                    f"Pozycje na fakturze: {', '.join(repr(s) for s in document_symbols)}. "
-                    "Sprawdź mapowanie symboli towarów — korekta nie została wystawiona."
+            if (invoice_data.correction_type or "").upper() == "FULL":
+                # Korekta całkowita nie wymaga dopasowywania czegokolwiek: zerujemy
+                # wszystko, co jest na fakturze. To jedyny wariant, w którym pomyłka
+                # w dopasowaniu jest z definicji niemożliwa, więc nie ma powodu
+                # przepuszczać go przez rozwiązywanie symboli.
+                for towar_id, group in positions_by_product.items():
+                    for pozycja in group:
+                        pozycja.IloscJmPoKorekcie = 0.0
+                        if reason_id is not None:
+                            try:
+                                pozycja.PrzyczynaKorektyId = reason_id
+                            except Exception as e:
+                                logger.debug(f"Nie udało się ustawić PrzyczynaKorektyId: {e}")
+                    corrected_products.add(towar_id)
+                logger.info(
+                    f"Korekta całkowita faktury {base_fs_num}: wyzerowano "
+                    f"{len(document_symbols)} pozycji: {document_symbols}"
                 )
+            else:
+                available_ids = set(positions_by_product)
+                unresolved = []
+
+                for item in invoice_data.line_items:
+                    present_ids = self._find_positions_for_item(
+                        item, positions_by_product, positions_by_symbol, available_ids
+                    )
+                    if not present_ids:
+                        unresolved.append(item)
+                        continue
+
+                    groups = [positions_by_product[tid] for tid in present_ids]
+                    self._apply_correction_to_positions(groups, item, reason_id)
+                    corrected_products.update(present_ids)
+                    available_ids.difference_update(present_ids)
+
+                # Gdy zostaje dokładnie jedna niedopasowana pozycja żądania i dokładnie
+                # jedna wolna pozycja faktury, para jest jednoznaczna. Korygujemy zawsze
+                # konkretną fakturę o zamkniętym zbiorze pozycji, więc to bezpieczniejsze
+                # niż odesłanie błędu — ale zostawiamy głośne ostrzeżenie, bo rozjazd
+                # symboli oznacza problem w mapowaniach.
+                if len(unresolved) == 1 and len(available_ids) == 1:
+                    leftover_id = available_ids.pop()
+                    leftover_symbol = str(positions_by_product[leftover_id][0].TowarSymbol)
+                    logger.warning(
+                        f"Symbol '{unresolved[0].product_symbol}' nie pasuje do żadnej pozycji "
+                        f"faktury {base_fs_num}, ale została dokładnie jedna wolna pozycja "
+                        f"('{leftover_symbol}') i jedna nieprzypisana pozycja żądania — łączę je. "
+                        "Sprawdź mapowanie produktu, bo symbol z zamówienia rozjechał się z fakturą."
+                    )
+                    self._apply_correction_to_positions(
+                        [positions_by_product[leftover_id]], unresolved.pop(), reason_id
+                    )
+                    corrected_products.add(leftover_id)
+
+                if unresolved:
+                    # Cicha korekta zerowa jest gorsza niż błąd: dokument powstawał, magazyn
+                    # się nie ruszał, a API zwracało sukces.
+                    raise ValueError(
+                        f"Nie odnaleziono na fakturze {base_fs_num} pozycji dla: "
+                        f"{', '.join(i.product_symbol for i in unresolved)}. "
+                        f"Pozycje na fakturze: {', '.join(repr(s) for s in document_symbols)}. "
+                        "Sprawdź mapowanie symboli towarów — korekta nie została wystawiona."
+                    )
 
             if not corrected_products:
                 raise ValueError(
@@ -911,6 +927,90 @@ class DocumentService:
                     dok.Zamknij()
                 except Exception:
                     pass
+
+    def _find_positions_for_item(self, item, positions_by_product, positions_by_symbol, available_ids) -> list:
+        """
+        Znajduje pozycje faktury odpowiadające jednej pozycji żądania korekty.
+
+        Kolejno, od najpewniejszego do najluźniejszego:
+        1. po `TowarId` z kartoteki (komplet rozwijany na składniki),
+        2. po znormalizowanym symbolu pozycji dokumentu — kartoteka Subiekta zawiera
+           bliźniacze wpisy różniące się białymi znakami ('CMO-MP012OC-BK' kontra
+           'CMO-MP012OC-BK '), które mają osobne `tw_Id`, a `get_normalized_map`
+           zostawia z nich tylko jeden,
+        3. po ilości i wartości sprzed korekty — ratuje sytuację, gdy symbol
+           z zamówienia rozjechał się z tym, co faktycznie poszło na fakturę.
+
+        Każdy krok ogranicza się do pozycji **tej** faktury i akceptuje wyłącznie
+        dopasowanie jednoznaczne.
+        """
+        details, normalized_symbol = self._resolve_correction_product(item.product_symbol)
+
+        target_ids = self._expand_to_document_products(details) if details else []
+        present_ids = [tid for tid in target_ids if tid in available_ids]
+        if present_ids:
+            return present_ids
+
+        for candidate_key in (normalized_symbol, normalize_symbol(item.product_symbol)):
+            if not candidate_key:
+                continue
+            by_symbol = [tid for tid in positions_by_symbol.get(candidate_key, []) if tid in available_ids]
+            if by_symbol:
+                logger.info(
+                    f"Symbol '{item.product_symbol}' dopasowany po symbolu pozycji dokumentu "
+                    f"(TowarId={by_symbol}) — kartoteka ma prawdopodobnie bliźniacze wpisy."
+                )
+                return by_symbol
+
+        by_value = self._match_positions_by_value(item, positions_by_product, available_ids)
+        if by_value:
+            return by_value
+
+        return []
+
+    def _match_positions_by_value(self, item, positions_by_product, available_ids) -> list:
+        """
+        Dopasowuje pozycję żądania do pozycji faktury po ilości i wartości sprzed korekty.
+
+        Używane, gdy symbol zawiódł — np. mapowanie oferty na towar ERP zmieniono już po
+        wystawieniu faktury. Akceptujemy wyłącznie trafienie jednoznaczne; przy dwóch
+        pozycjach o tej samej wartości wolimy błąd niż losowy wybór.
+        """
+        if item.original_quantity is None or item.original_gross_price is None:
+            return []
+
+        want_qty = float(item.original_quantity)
+        want_value = want_qty * float(item.original_gross_price)
+        if want_qty <= 0:
+            return []
+
+        matches = []
+        for towar_id in available_ids:
+            group = positions_by_product[towar_id]
+            group_qty = sum(float(pozycja.IloscJm) for pozycja in group)
+            group_value = sum(
+                float(pozycja.IloscJm) * float(pozycja.CenaBruttoPrzedRabatem) for pozycja in group
+            )
+            if abs(group_qty - want_qty) > 1e-6:
+                continue
+            # Tolerancja grosza na pozycję: rozbicie fiskalne celowo różnicuje ceny.
+            if abs(group_value - want_value) > 0.01 * len(group):
+                continue
+            matches.append(towar_id)
+
+        if len(matches) == 1:
+            logger.warning(
+                f"Symbol '{item.product_symbol}' dopasowany po ilości i wartości "
+                f"({want_qty} x {item.original_gross_price} zł), nie po symbolu. "
+                "Sprawdź mapowanie produktu — symbol z zamówienia nie zgadza się z fakturą."
+            )
+            return matches
+        if len(matches) > 1:
+            logger.warning(
+                f"Symbol '{item.product_symbol}' pasuje po wartości do {len(matches)} pozycji "
+                "faktury — odmawiam zgadywania."
+            )
+        return []
 
     def _expand_to_document_products(self, details: dict) -> list:
         """
