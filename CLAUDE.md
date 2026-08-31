@@ -227,8 +227,26 @@ składniki kompletu), a wewnątrz grupy przez wypełnianie po kolei. Cena skaluj
 `corrected_gross_price / original_gross_price` — dlatego backend **musi** wysyłać pola
 `original_*`, inaczej cen kompletów nie da się rozdzielić.
 
-Brak dopasowania kończy się **błędem 422** z listą symboli. Cicha korekta zerowa jest gorsza
-niż błąd.
+**Źródłem prawdy są pozycje korygowanej faktury, nie symbol z zamówienia.** Mapowanie
+`ProductErpMapping` bywa zmieniane już po wystawieniu FS, więc symbol wyprowadzony z `offer_id`
+potrafi wskazywać towar, którego na fakturze nie ma. Stąd kolejność dopasowań:
+
+1. `correction_type == "FULL"` → **żadnego dopasowywania**: zerowane są wszystkie pozycje
+   faktury. W tym wariancie pomyłka jest z definicji niemożliwa.
+2. po `TowarId` z kartoteki (komplet rozwijany na składniki),
+3. po znormalizowanym symbolu pozycji dokumentu — kartoteka Subiekta zawiera bliźniacze wpisy
+   różniące się samymi białymi znakami (`'CMO-MP012OC-BK'` i `'CMO-MP012OC-BK '`), mające osobne
+   `tw_Id`; `get_normalized_map` zostawia z nich tylko pierwszy napotkany, a `SELECT` nie ma
+   `ORDER BY`, więc który to będzie, jest w praktyce losowe,
+4. po ilości i wartości sprzed korekty,
+5. jedna niedopasowana pozycja żądania + jedna wolna pozycja faktury → para jednoznaczna,
+   łączona z ostrzeżeniem w logu.
+
+Kroki 2–5 ograniczają się do pozycji **tej jednej faktury** i akceptują wyłącznie trafienie
+jednoznaczne — to nie jest powrót do dawnego globalnego dopasowywania po podciągach kartoteki.
+
+Gdy i to zawiedzie: **błąd 422** z listą symboli żądania oraz pozycji faktury. Cicha korekta
+zerowa jest gorsza niż błąd.
 
 ### Formy zwrotu
 
