@@ -24,7 +24,7 @@ Działa jako aplikacja w **zasobniku systemowym Windows** (tray icon) z natywnym
 | Auto-update | własny `UpdateManager` + GitHub Releases (`Neglomen/subiekt_agent`) | sprawdzanie/pobieranie nowych wersji |
 | Zarządzanie zależnościami | Poetry (`pyproject.toml`, `poetry.lock`) | — |
 
-**Wersja aplikacji:** 0.9.0 — jedyne źródło prawdy to `app/services/updater.py::APP_VERSION` (importują je `app/main.py` i `app/gui_api.py`). Drugie, niezależne miejsce to `AppVersion` w `installer/setup.iss` — Inno Setup nie zaimportuje stałej z Pythona, więc przy wydaniu trzeba podbić oba.
+**Wersja aplikacji:** 0.10.0 — jedyne źródło prawdy to `app/services/updater.py::APP_VERSION` (importują je `app/main.py` i `app/gui_api.py`). Drugie, niezależne miejsce to `AppVersion` w `installer/setup.iss` — Inno Setup nie zaimportuje stałej z Pythona, więc przy wydaniu trzeba podbić oba.
 **GitHub Releases:** `Neglomen/subiekt_agent`
 
 ---
