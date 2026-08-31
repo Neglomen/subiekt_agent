@@ -709,6 +709,8 @@ class DocumentService:
             # się groszem (patrz create_sales_invoice). Dlatego grupujemy pozycje po
             # TowarId i korygujemy WSZYSTKIE pasujące, a nie pierwszą znalezioną.
             positions_by_product = {}
+            positions_by_symbol = {}
+            document_symbols = []
             for p in nowy_dok.Pozycje:
                 try:
                     towar_id = int(p.TowarId)
@@ -716,18 +718,38 @@ class DocumentService:
                     logger.warning(f"Pozycja '{p.TowarSymbol}' bez TowarId (usługa jednorazowa?) — pomijam w dopasowaniu.")
                     continue
                 positions_by_product.setdefault(towar_id, []).append(p)
+                document_symbols.append(str(p.TowarSymbol))
+                symbol_key = normalize_symbol(str(p.TowarSymbol))
+                if symbol_key and towar_id not in positions_by_symbol.setdefault(symbol_key, []):
+                    positions_by_symbol[symbol_key].append(towar_id)
+
+            logger.debug(f"Pozycje na KFS: {document_symbols}")
 
             corrected_products = set()
             unmatched = []
 
             for item in invoice_data.line_items:
-                details = self._resolve_correction_product(item.product_symbol)
-                if not details:
-                    unmatched.append(item.product_symbol)
-                    continue
-
-                target_ids = self._expand_to_document_products(details)
+                details, normalized_symbol = self._resolve_correction_product(item.product_symbol)
+                target_ids = self._expand_to_document_products(details) if details else []
                 present_ids = [tid for tid in target_ids if tid in positions_by_product]
+
+                if not present_ids:
+                    # Kartoteka Subiekta potrafi zawierać bliźniacze wpisy różniące się
+                    # samymi białymi znakami ('CMO-MP012OC-BK' i 'CMO-MP012OC-BK ') —
+                    # osobne tw_Id, ten sam klucz po normalizacji. get_normalized_map
+                    # zostawia wtedy pierwszy napotkany, który nie musi być tym z faktury.
+                    # Szukamy więc po symbolu wśród pozycji TEJ faktury: zakres jest wąski,
+                    # więc nie grozi to trafieniem w przypadkowy towar.
+                    for candidate_key in (normalized_symbol, normalize_symbol(item.product_symbol)):
+                        if not candidate_key:
+                            continue
+                        present_ids = positions_by_symbol.get(candidate_key, [])
+                        if present_ids:
+                            logger.info(
+                                f"Symbol '{item.product_symbol}' dopasowany po symbolu pozycji dokumentu "
+                                f"(TowarId={present_ids}) — kartoteka ma prawdopodobnie bliźniacze wpisy."
+                            )
+                            break
 
                 if not present_ids:
                     unmatched.append(item.product_symbol)
@@ -749,6 +771,7 @@ class DocumentService:
                 # się nie ruszał, a API zwracało sukces.
                 raise ValueError(
                     f"Nie odnaleziono na fakturze {base_fs_num} pozycji dla: {', '.join(unmatched)}. "
+                    f"Pozycje na fakturze: {', '.join(repr(s) for s in document_symbols)}. "
                     "Sprawdź mapowanie symboli towarów — korekta nie została wystawiona."
                 )
 
@@ -819,14 +842,18 @@ class DocumentService:
                 except Exception:
                     logger.warning("Nie udało się zamknąć obiektu KFS.")
 
-    def _resolve_correction_product(self, raw_symbol: str) -> Optional[dict]:
+    def _resolve_correction_product(self, raw_symbol: str):
         """
-        Zamienia symbol z żądania korekty na wpis kartoteki ({'id', 'type'}).
+        Zamienia symbol z żądania korekty na (wpis kartoteki, znormalizowany symbol).
 
         Rozumie te same sentinele usług co wystawianie FS ($SERVICE_*), dzięki czemu
         korekta trafia dokładnie w pozycję, którą FS wcześniej dodała. Wcześniej korekta
         dopasowywała pozycje po tekstowej nazwie oferty z marketplace'u — działało to
         tylko dla nazw obecnych w product_mappings z config.json.
+
+        Znormalizowany symbol zwracamy osobno, bo kartoteka Subiekta bywa niejednoznaczna
+        (bliźniacze wpisy różniące się białymi znakami) i wywołujący potrzebuje go do
+        dopasowania awaryjnego po symbolu pozycji dokumentu.
         """
         product_map = self._product_repo.get_normalized_map()
         service_map = self._config.mappings.service_mappings
@@ -843,24 +870,25 @@ class DocumentService:
 
             if not final_symbol:
                 logger.warning(f"Brak mapowania usługi dla sentinela '{raw_symbol}' w config.json.")
-                return None
-            return product_map.get(normalize_symbol(final_symbol))
+                return None, ""
+            normalized = normalize_symbol(final_symbol)
+            return product_map.get(normalized), normalized
 
         mapped_symbol = self._config.mappings.product_mappings.get(raw_symbol, raw_symbol)
         normalized = normalize_symbol(mapped_symbol)
         details = product_map.get(normalized)
         if details:
-            return details
+            return details, normalized
 
         # Dopasowanie rozmyte tylko wtedy, gdy jest jednoznaczne — przy wielu kandydatach
         # korekta trafiłaby w przypadkowy towar (dokładnie to robiła poprzednia wersja).
         candidates = [norm for norm in product_map if norm and (norm in normalized or normalized in norm)]
         if len(candidates) == 1:
             logger.info(f"Symbol '{raw_symbol}' dopasowany rozmyto do '{candidates[0]}'.")
-            return product_map.get(candidates[0])
+            return product_map.get(candidates[0]), normalized
         if len(candidates) > 1:
             logger.warning(f"Symbol '{raw_symbol}' pasuje rozmyto do {len(candidates)} towarów — odmawiam zgadywania.")
-        return None
+        return None, normalized
 
     def _get_source_ksef_number(self, doc_number: str) -> Optional[str]:
         """
