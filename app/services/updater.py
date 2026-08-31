@@ -2,10 +2,10 @@
 
 import logging
 import re
-import sys
 import os
 import subprocess
 import tempfile
+import time
 import urllib.request
 import json
 from pathlib import Path
@@ -168,24 +168,57 @@ class UpdateManager:
             self.download_status = "error"
             self.error_message = str(e)
 
+    def _release_file_locks(self) -> None:
+        """
+        Zatrzymuje tunel, serwer HTTP i SferaWorkera, zanim ruszy instalator.
+
+        `cloudflared.exe` i `ngrok.exe` agent pobiera do `%APPDATA%\\SuppSalesAgent\\bin`,
+        czyli **do wnętrza katalogu instalacji**. Są to procesy potomne — samo zamknięcie
+        agenta ich nie kończy, a dopóki żyją, Inno Setup nie nadpisze plików w `{app}`
+        i instalacja pada na błędach dostępu.
+        """
+        try:
+            from app.gui import tray
+
+            manager = getattr(tray._tray_instance, "agent_manager", None)
+            if manager is None:
+                logger.warning("Brak instancji AgentManagera — pomijam zamykanie usług.")
+                return
+            manager.stop()
+            logger.info("Usługi agenta zatrzymane, pliki zwolnione.")
+        except Exception as e:
+            # Instalator i tak ma ruszyć: gorsza jest aktualizacja, która nie startuje,
+            # niż taka, która trafi na zablokowany plik i o tym powie.
+            logger.error(f"Nie udało się zatrzymać usług agenta przed aktualizacją: {e}")
+
     def apply_update(self):
         """Uruchamia pobrany instalator i zamyka bieżącą aplikację."""
         if not self.downloaded_file_path or not self.downloaded_file_path.exists():
             logger.error("Nie znaleziono pobranego instalatora do uruchomienia.")
             return
-            
+
+        logger.info("Zatrzymywanie usług agenta przed aktualizacją...")
+        self._release_file_locks()
+        # Chwila na zamkniecie uchwytow przez system po zabiciu procesow potomnych.
+        time.sleep(1.5)
+
         logger.info("Uruchamianie instalatora i wyłączanie agenta...")
         try:
             # Uruchamiamy instalator w tle. 
             # Domyślnie nie używamy flag /SILENT, aby użytkownik widział instalator.
             subprocess.Popen([str(self.downloaded_file_path)])
-            
-            # Wyłączamy aplikację natychmiast, aby zwolnić blokady plików
-            sys.exit(0)
         except Exception as e:
             logger.error(f"Nie udało się uruchomić instalatora: {e}")
             self.download_status = "error"
             self.error_message = f"Uruchomienie instalatora nie powiodło się: {e}"
+            return
+
+        # `os._exit`, nie `sys.exit`: ta metoda biegnie w wątku pobierania
+        # (`start_download_and_install` -> threading.Thread), a `sys.exit()` poza wątkiem
+        # głównym kończy wyłącznie ten wątek. Proces agenta zostawał więc przy życiu i
+        # trzymał własne pliki, przez co instalator wywalał się na błędach dostępu.
+        logging.shutdown()
+        os._exit(0)
 
 # Globalna instancja UpdateManagera
 update_manager = UpdateManager()

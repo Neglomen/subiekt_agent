@@ -101,6 +101,40 @@ cd frontend && npm run build
    "Bezpieczeństwo" #2).
 5. Upload na GitHub Releases (`Neglomen/subiekt_agent`) — auto-update klientów bierze stamtąd.
 
+### Instalacja i aktualizacja — dlaczego wygląda tak, jak wygląda
+
+Do 0.9.0 aktualizacja regularnie kończyła się błędami dostępu do plików, a jedynym
+pewnym wyjściem było odinstalowanie agenta przed instalacją nowej wersji. Złożyły się na
+to trzy niezależne przyczyny — wszystkie naprawione, nie cofaj tych zmian:
+
+1. **Agent nie zamykał się przed startem instalatora.** `apply_update()` wołało
+   `sys.exit(0)`, ale biegnie ono w wątku pobierania (`start_download_and_install` →
+   `threading.Thread`), a `sys.exit()` poza wątkiem głównym kończy **wyłącznie ten wątek**.
+   Proces agenta żył dalej i trzymał własne pliki. Teraz jest `os._exit(0)`, poprzedzone
+   `_release_file_locks()`, które przez `AgentManager.stop()` domyka tunele, uvicorna
+   i SferaWorkera. **Nie wracaj do `sys.exit`** — pilnuje tego `tests/test_updater_shutdown.py`.
+2. **Tunel blokował katalog instalacji.** `cloudflared.exe`/`ngrok.exe` lądują w
+   `%APPDATA%\SuppSalesAgent\bin`, czyli **wewnątrz** `{app}` (`DefaultDirName`), a jako
+   procesy potomne nie giną razem z agentem. Nie ma ich w `[Files]`, więc Restart Manager
+   ich nie widzi — dlatego `setup.iss` ma sekcję `[Code]`, która ubija procesy
+   **po ścieżce** (`Get-Process | Where-Object { $_.Path -like '{app}\*' }`). Filtr po
+   nazwie obrazu ubiłby też cudzy tunel niezwiązany z agentem.
+3. **Stare pliki zostawały po aktualizacji.** PyInstaller w trybie onedir trzyma runtime
+   w `_internal`; bez `[InstallDelete]` moduł usunięty między wersjami zostawał obok
+   nowych i paczka robiła się niespójna. `config.json` i `.env` leżą poza `_internal`,
+   więc konfiguracja klienta to przeżywa.
+
+Dodatkowo `AppId` (trwała tożsamość — **nie zmieniać**) oraz `{autodesktop}` zamiast
+`{commondesktop}`: ten drugi wskazuje `C:\Users\Public\Desktop`, gdzie zapis wymaga
+uprawnień administratora, a instalator działa z `PrivilegesRequired=lowest` — tworzenie
+skrótu kończyło się osobnym błędem dostępu.
+
+**Czego to NIE naprawia:** ostrzeżenia SmartScreen i alarmów antywirusa. Ani `.exe`, ani
+instalator **nie są podpisane cyfrowo** (`build.ps1` nie wywołuje `signtool`). Niepodpisany
+plik PyInstallera to klasyczny cel heurystyk AV, a agent dodatkowo pobiera i uruchamia
+`cloudflared.exe` oraz własny instalator — wzorzec typowy dla downloaderów. Bez certyfikatu
+podpisującego (OV buduje reputację tygodniami, EV daje ją od razu) ostrzeżenia zostaną.
+
 > **Uwaga:** `main_gui.py` blokuje wątek główny pętlą `pywebview` — na Windows to wymóg (`webview.start()` musi być na głównym wątku). `pystray` (tray) działa w osobnym wątku (`run_detached()`), Uvicorn w kolejnym.
 
 ---
