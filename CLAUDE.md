@@ -91,6 +91,16 @@ cd frontend && npm run build
 ./build.ps1
 ```
 
+### Wydanie nowej wersji
+
+1. Podbij wersję w **dwóch** miejscach: `app/services/updater.py::APP_VERSION` i `AppVersion`
+   w `installer/setup.iss` (Inno Setup nie zaimportuje stałej z Pythona).
+2. `cd frontend && npm run build` — inaczej `.exe` spakuje stary panel z `app/static/`.
+3. `./build.ps1` — PyInstaller → usunięcie `.env`/`config.json` z `dist/` → ISCC.exe.
+4. Sprawdź, że w `dist/` **nie ma** `.env` ani `config.json` (repo jest publiczne, patrz
+   "Bezpieczeństwo" #2).
+5. Upload na GitHub Releases (`Neglomen/subiekt_agent`) — auto-update klientów bierze stamtąd.
+
 > **Uwaga:** `main_gui.py` blokuje wątek główny pętlą `pywebview` — na Windows to wymóg (`webview.start()` musi być na głównym wątku). `pystray` (tray) działa w osobnym wątku (`run_detached()`), Uvicorn w kolejnym.
 
 ---
@@ -134,18 +144,118 @@ Wszystkie poza `/status` wymagają nagłówka `X-API-Key` (`Depends(get_api_key)
 |---|---|
 | `GET /status` | Health check (czy SferaWorker gotowy) |
 | `POST /sales-invoices/create` | Tworzy FS (fakturę sprzedaży) |
-| `POST /sales-invoices/correct` | Tworzy KFS (korektę FS) |
+| `POST /sales-invoices/correct` | Tworzy KFS (korektę FS) — patrz sekcja "Korekty faktur sprzedaży (KFS)" |
 | `GET /sales-invoices/pdf`, `/sales-corrections/pdf` | Eksport dokumentu do PDF (plik tymczasowy, sprzątany po wysłaniu) |
 | `POST /invoices/check` | Sprawdza czy FZ/KFZ już istnieje (idempotencja) |
 | `POST /invoices/create` | Tworzy FZ lub KFZ |
 | `GET /products` | Wyszukiwanie towarów po symbolu/nazwie |
 | `POST /products/stock/bulk` | Masowe stany magazynowe (jedno zapytanie SQL z CTE, liczy też komplety) |
 | `POST /products/components/bulk` | Masowe pobranie składników kompletów |
+| `GET /payment-forms` | Formy płatności ze słownika Subiekta (`sl_FormaPlatnosci`): `id`, `name`, `type` (= `fp_Typ`) |
 | `GET/POST /config/mappings` | Odczyt/zapis `config.json` |
 
 Pełna, żywa dokumentacja: `/docs` (Swagger UI, FastAPI domyślne — publicznie dostępne, nie wymaga API key).
 
 ---
+
+## Korekty faktur sprzedaży (KFS)
+
+Najbardziej zawiła ścieżka w tym komponencie i jedyna, która dotyka trzech repozytoriów naraz.
+Przebudowana 2026-08-31 po audycie — poniżej stan docelowy i powody decyzji, żeby nie odtwarzać
+usuniętych rozwiązań.
+
+### Kontrakt end-to-end
+
+| Warstwa | Co wysyła |
+|---|---|
+| `sales-correction-modal.tsx` | `offer_id` pozycji, `$SERVICE_DELIVERY` dla dostawy, `$SERVICE_ADDITIONAL_<definitionId>` dla usług, `payment_form_id` albo `payment_type` (`gotówka`/`przelew`) |
+| `subiekt_tasks._resolve_correction_line_symbols` | zamienia `offer_id` → symbol ERP z `ProductErpMapping`, `$SERVICE_DELIVERY` → `_COD`/`_PREPAID` wg `order.payment_type` |
+| agent `correct_sales_invoice` | dopasowuje pozycje po `TowarId`, nie po tekście |
+
+**Symbole muszą pochodzić z tego samego źródła co przy wystawianiu FS** (`ProductErpMapping` +
+sentinele `$SERVICE_*`). Wcześniej front wysyłał surową nazwę oferty z marketplace'u, agent
+próbował ją odgadnąć przez `product_mappings` z `config.json` i dopasowanie po podciągach, a przy
+niepowodzeniu **po cichu pomijał pozycję** — powstawała korekta na 0 zł, magazyn się nie ruszał,
+a API zwracało sukces. Nie wracaj do dopasowywania po nazwie.
+
+### Dopasowywanie pozycji
+
+Jedna pozycja żądania odpowiada **wielu** pozycjom dokumentu, w dwóch niezależnych wymiarach:
+
+- **komplet** (`tw_Rodzaj = 8`) — `create_sales_invoice` rozkłada go na składniki, więc korekta
+  szuka składników (`_expand_to_document_products`), nie kompletu;
+- **rozbicie fiskalne** — jeden towar bywa w dwóch pozycjach różniących się o grosz
+  (patrz `app/pricing.py`); `_distribute_quantity` wypełnia je po kolei do pierwotnej ilości,
+  bo skalowanie proporcjonalne dałoby dwie pozycje po pół sztuki.
+
+Ilość dzielona jest dwustopniowo: proporcją `po/przed` między grupy towarów (poprawnie skaluje
+składniki kompletu), a wewnątrz grupy przez wypełnianie po kolei. Cena skaluje się proporcją
+`corrected_gross_price / original_gross_price` — dlatego backend **musi** wysyłać pola
+`original_*`, inaczej cen kompletów nie da się rozdzielić.
+
+Brak dopasowania kończy się **błędem 422** z listą symboli. Cicha korekta zerowa jest gorsza
+niż błąd.
+
+### Formy zwrotu
+
+Formy nie zgadujemy. `payment_form_id` (z `sl_FormaPlatnosci.fp_Id`) → konkretna forma;
+`gotówka` → `PlatnoscGotowkaKwota`; `przelew` → `PlatnoscPrzelewKwota` ("Zapłacono przelewem",
+rozliczenie natychmiastowe); cokolwiek innego bez identyfikatora → 422 z listą dostępnych form.
+O tym, czy forma jest kartowa, decyduje `Slowniki.FormyPlatnosciKarta.Istnieje(nazwa)` — ta sama
+metoda co przy FS; `fp_Typ` to tylko fallback.
+
+Poprzednia wersja brała **pierwszą z brzegu** formę o `fp_Typ == 0` z nieuporządkowanego wyniku
+SQL — stąd zgłoszenia "korekta wskazuje inną metodę rozliczenia". `SELECT` bez `ORDER BY` nie ma
+gwarantowanej kolejności; nie opieraj na niej logiki.
+
+### Fakty ze Sfery (zweryfikowane w dokumentacji, nie zgadywane)
+
+| Fakt | Konsekwencja |
+|---|---|
+| `SuPozycjaKorekty` — parametry **przed** korektą są read-only, ustawiać można `*PoKorekcie` | `IloscJmPoKorekcie`, `CenaBruttoPrzedRabatemPoKorekcie`, `CenaNettoPrzedRabatemPoKorekcie`, `VatProcentPoKorekcie` |
+| `SuDokument` **nie ma** atrybutu z tekstem przyczyny korekty | przyczyna to `PrzyczynaKorektyId` **na pozycji**, wskazujący `sl_PrzyczynaKorekty.pkr_Id`; wolny tekst idzie do `Uwagi` |
+| `UjecieKorektyTypEnum`: 1 = w dacie faktury pierwotnej, 2 = w dacie wystawienia korekty, 3 = w dacie innej | `UjecieKorektyData` wolno ustawić **tylko** przy typie 3; agent ustawia 2 |
+| `PlatnoscPrzelewKwota` istnieje i znaczy "Zapłacono przelewem" | zwrot natychmiastowy nie potrzebuje formy odroczonej |
+| `SuDokument.DoDokumentuId` = kolumna `dok_DoDokId` | wiązanie KFS→FS; używane do wykrywania duplikatu (nie `dok_Uwagi LIKE`) |
+| `SkutekMagazynowy` jest przestarzały ("pozostawiony ze względu na wsteczną zgodność") | zwrot na magazyn dzieje się **automatycznie** na podstawie `IloscJmPoKorekcie`; nie ma czego dodatkowo ustawiać |
+| `DoDokumentuNumerKSeF` | numer KSeF faktury źródłowej na korekcie |
+| `dok__Dokument.dok_Typ` | 1 = FZ, 2 = FS, 6 = KFS |
+| Atrybuty nieistniejące, mimo że były w kodzie | `SuDokument.Przyczyna`, `SuPozycja.StawkaVatProcent`, `SuPozycja.StawkaVat` — nie przywracaj |
+
+### Decyzje właściciela produktu
+
+- **Korekty nie fiskalizują się w ogóle** (2026-08-31). Agent jawnie ustawia
+  `RejestrujNaUF = False` na KFS, bo `NaPodstawie` kopiuje nagłówek FS, a ta po wydruku ma tę
+  flagę ustawioną. Nie dodawaj automatu drukowania KFS na drukarce fiskalnej.
+- **Korekty z NIP-em idą do KSeF** tą samą flagą `dok_CzekaNaKSeF` co faktury (`_mark_for_ksef`).
+  O kwalifikacji decyduje NIP płatnika faktury pierwotnej (`DocumentRepository.get_payer_nip`).
+- **Druga korekta do tej samej FS jest blokowana** jako duplikat (zwracane `action_taken="existed"`).
+  Tak było przed przebudową; jeśli ma się to zmienić, to świadoma decyzja, nie efekt uboczny.
+
+### Otwarte
+
+- **Znak `KwotaDoZaplaty` na KFS** — nieudokumentowany. Ścieżka KFZ używa wartości ze znakiem
+  (`create_purchase_invoice`), KFS używa `abs()`. Jedna z nich jest zła. W kodzie jest `TODO`
+  i log surowej wartości ze Sfery — do rozstrzygnięcia po pierwszej korekcie na produkcji.
+  Alternatywnie: `SuDokument.PodajRozrachunek()` zwraca rozrachunek KFS-a, jego
+  `WartoscPoczatkowaWaluta` też pokaże znak.
+- `UjecieKorektyTyp = 2` jest zaszyte w kodzie. Jeśli księgowość zażyczy sobie ujęcia w dacie
+  faktury pierwotnej — zmiana na 1.
+
+### Referencja zamówienia w uwagach FS
+
+Agent **celowo nie ustawia** `NumerOryginalny` — Subiekt drukowałby wtedy adnotację
+"Do zamówienia: ..." pod numerem faktury. Referencja (szablon `erp_sales_reference_template`
+z `sync_config` integracji) trafia wyłącznie do `Uwagi`, limit 500 znaków.
+
+Backend obcina sformatowaną referencję do 400 znaków (zapas na prefiks "Zamówienie od klienta: ").
+Do 2026-08-31 obcinał do **50**, przez co przy szablonie z `{order_id}` (ID Allegro ma 36 znaków)
+ucinało login kupującego.
+
+`safe_original_number[:30]` w `create_sales_invoice` to **wyłącznie** klucz wyszukiwania duplikatu
+(`dok_Uwagi LIKE '%prefiks%'`), nie limit pola. Konsekwencja: **szablon musi zawierać
+`{order_id}`, najlepiej na początku** — szablon typu `{login}` sprawiłby, że drugie zamówienie
+tego samego kupującego zostanie uznane za już zafakturowane.
 
 ## Ważne zasady
 
@@ -173,7 +283,7 @@ Pełna, żywa dokumentacja: `/docs` (Swagger UI, FastAPI domyślne — publiczni
 
 ## Znane problemy / dług techniczny
 
-- **Testy pokrywają na razie tylko arytmetykę cen.** `tests/test_pricing.py` sprawdza `app/pricing.py` (podział wartości kompletu na pozycje fiskalne) — to czysta logika, więc chodzi bez Subiekta i bez Windows. Reszta, w tym tworzenie FS/KFS/FZ/KFZ przez COM, jest nadal nieprzetestowana; brak CI (`.github/workflows` nie istnieje). `scratch/` (≈1750 linii) to ręczne skrypty deweloperskie do eksploracji Sfery/SQL, nie test suite.
+- **Testy pokrywają na razie tylko arytmetykę cen.** `tests/test_pricing.py` sprawdza `app/pricing.py` (podział wartości kompletu na pozycje fiskalne) — to czysta logika, więc chodzi bez Subiekta i bez Windows. Reszta, w tym tworzenie FS/KFS/FZ/KFZ przez COM, jest nadal nieprzetestowana; brak CI (`.github/workflows` nie istnieje). **Warto wiedzieć:** metody pomocnicze korekty (`_apply_correction_to_positions`, `_distribute_quantity`, `_expand_to_document_products`, `_resolve_correction_product`) nie dotykają COM — da się je testować na atrapach pozycji (obiekt z polami `TowarId`, `IloscJm`, `CenaBruttoPrzedRabatem` i zapisywalnymi `*PoKorekcie`), wstrzykując `SimpleNamespace` w miejsce `product_repo` i `config`. `scratch/` (≈1750 linii) to ręczne skrypty deweloperskie do eksploracji Sfery/SQL, nie test suite.
 - `scratch/` zawiera scommitowane skompilowane `.pyc` (`__pycache__`) i binarny `test_print.pdf` — `.gitignore` próbuje je wykluczyć, ale zostały dodane wcześniej; warto `git rm --cached` i wyczyścić.
 - `app/services/document_service.py` — ponad 1200 linii w jednej klasie (FS, KFS, FZ/KFZ, płatności, KSeF, PDF). Kandydat do rozbicia na mniejsze serwisy per typ dokumentu.
 - Brak `README.md` w katalogu głównym repo (jest tylko generyczny `frontend/README.md` z boilerplate Vite) — brak instrukcji setupu dla kogoś innego niż autor.
