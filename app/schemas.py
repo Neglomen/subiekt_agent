@@ -132,6 +132,7 @@ class SalesInvoiceCorrectRequest(BaseModel):
     
     correction_type: Optional[str] = Field(None, description="Wariant korekty: FULL, PARTIAL_QUANTITY, PARTIAL_VALUE. Dla FULL agent zeruje wszystkie pozycje faktury bez dopasowywania symboli.")
     correction_reason: str = Field(..., description="Przyczyna korekty.")
+    correction_description: Optional[str] = Field(None, description="Dodatkowy opis korekty (gotowy tekst, tagi rozwija strona wywołująca). Trafia do uwag dokumentu.")
     issue_date: date = Field(..., description="Data wystawienia korekty.")
     
     payment_form_id: Optional[int] = Field(None, description="Identyfikator formy płatności ze słownika Subiekta (sl_FormaPlatnosci.fp_Id). Ma pierwszeństwo przed payment_type.")

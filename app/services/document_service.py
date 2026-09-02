@@ -650,14 +650,26 @@ class DocumentService:
                 logger.debug(f"Nie udało się ustawić LiczonyOdCenBrutto na KFS: {e}")
 
             # Subiekt GT to aplikacja Windows — pole Uwagi łamie wiersz dopiero na CRLF.
-            # Samo \n sklejało przyczynę korekty z numerem zamówienia w jedną linię,
-            # dlatego normalizujemy też uwagi przeniesione z FS przez NaPodstawie.
-            notes_text = f"Przyczyna korekty: {invoice_data.correction_reason}"
+            # Samo \n sklejało kolejne wpisy w jedną linię, dlatego normalizujemy też
+            # uwagi przeniesione z FS przez NaPodstawie.
+            note_lines = []
             existing_notes = (nowy_dok.Uwagi or "").replace("\r\n", "\n").rstrip()
-            combined = f"{existing_notes}\n{notes_text}" if existing_notes else notes_text
-            # Przycinamy do 500 znaków (limit dok_Uwagi) dopiero po zamianie na CRLF,
-            # żeby limit liczył się tak, jak zapisze go baza; osierocony \r ucinamy.
-            nowy_dok.Uwagi = combined.replace("\n", "\r\n")[:500].rstrip("\r")
+            if existing_notes:
+                note_lines.append(existing_notes)
+            if invoice_data.correction_description:
+                note_lines.append(invoice_data.correction_description.replace("\r\n", "\n").strip())
+            note_lines.append(f"Przyczyna korekty: {invoice_data.correction_reason}")
+
+            combined = "\n".join(line for line in note_lines if line)
+            # Przycinamy do 500 znaków (limit dok_Uwagi) dopiero po zamianie na CRLF, żeby
+            # limit liczył się tak, jak zapisze go baza; osierocony \r ucinamy.
+            uwagi = combined.replace("\n", "\r\n")
+            if len(uwagi) > 500:
+                logger.warning(
+                    f"Uwagi korekty mają {len(uwagi)} znaków i zostaną obcięte do 500 "
+                    "(limit kolumny dok_Uwagi). Skróć opis korekty."
+                )
+            nowy_dok.Uwagi = uwagi[:500].rstrip("\r")
 
             # Ujęcie korekty w VAT. Domyślnie gtaUjecieKorektyTypWDacieWystawieniaKorekty (2)
             # — tak rozlicza się zwrot uzgodniony z nabywcą. Wartość 1 to ujęcie w dacie
