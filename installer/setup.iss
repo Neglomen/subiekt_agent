@@ -9,7 +9,7 @@
 AppId={{7C1F0B34-2E58-4A7D-9F3C-1B6A5D40E2C9}
 AppName=SuppSales Subiekt GT Agent
 ; UWAGA: musi być zgodne z APP_VERSION w app/services/updater.py
-AppVersion=0.10.0
+AppVersion=0.11.0
 DefaultDirName={userappdata}\SuppSalesAgent
 DefaultGroupName=SuppSales Agent
 OutputDir=Output
