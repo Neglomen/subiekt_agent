@@ -689,14 +689,15 @@ class DocumentService:
         base_fs_id = matches[0]['doc_id']
         base_fs_num = matches[0]['doc_number']
 
-        # Idempotencja po powiązaniu dokumentów (dok_DoDokId = SuDokument.DoDokumentuId),
-        # a nie po numerze zamówienia w uwagach: uwagi są obcinane do 500 znaków i nie ma
-        # gwarancji, że NaPodstawie w ogóle je przeniesie, więc stary warunek przepuszczał
-        # duplikaty korekt.
-        existing_kfs = self._doc_repo.find_kfs_for_base_document(base_fs_id)
-        if existing_kfs:
-            logger.info(f"Korekta do faktury {base_fs_num} już istnieje: {existing_kfs['doc_number']}.")
-            return existing_kfs['doc_number'], Decimal("0.00"), "existed"
+        # Korekty wystawione już do tej faktury. Nie blokujemy na tym etapie: do jednej FS
+        # wolno wystawić kilka korekt (np. najpierw ilościową, potem wartościową).
+        # O duplikacie rozstrzygamy niżej, po przeliczeniu wartości.
+        existing_corrections = self._doc_repo.find_kfs_for_base_document(base_fs_id)
+        if existing_corrections:
+            logger.info(
+                f"Do faktury {base_fs_num} wystawiono już {len(existing_corrections)} korekt(y): "
+                f"{[c['doc_number'] for c in existing_corrections]}."
+            )
 
         logger.info(f"Znaleziono fakturę bazową: {base_fs_num} (ID: {base_fs_id}). Tworzę KFS.")
 
@@ -885,11 +886,29 @@ class DocumentService:
                 f"KwotaDoZaplaty wg Sfery = {kwota_do_zaplaty} zł."
             )
 
-            # TODO: potwierdzić w dokumentacji Sfery znak KwotaDoZaplaty na KFS. Ścieżka
-            # KFZ używa wartości ze znakiem (patrz create_purchase_invoice), tutaj
-            # zachowujemy dotychczasowe abs(), żeby nie zmieniać nieudokumentowanej
-            # semantyki rozliczenia przy okazji pozostałych poprawek.
-            self._handle_kfs_payment(nowy_dok, invoice_data, abs(kwota_do_zaplaty))
+            # Idempotencja bez blokowania kolejnych korekt: ponowione zadanie Dramatiq
+            # przynosi ten sam payload, a więc i tę samą wartość — to uznajemy za duplikat.
+            # Korekta o innej wartości to świadome, kolejne rozliczenie tej samej faktury
+            # i wolno ją wystawić.
+            duplicate = next(
+                (c for c in existing_corrections
+                 if abs(abs(c["total_gross"]) - abs(kwota_do_zaplaty)) <= Decimal("0.01")),
+                None,
+            )
+            if duplicate:
+                logger.info(
+                    f"Korekta o wartości {kwota_do_zaplaty} zł do faktury {base_fs_num} już "
+                    f"istnieje ({duplicate['doc_number']}) — nie tworzę duplikatu."
+                )
+                return duplicate["doc_number"], duplicate["total_gross"], "existed"
+
+            # Kwota rozliczenia idzie ZE ZNAKIEM, tak jak na korekcie zakupu
+            # (create_purchase_invoice: PlatnoscKredytKwota = KwotaDoZaplaty). Wcześniej
+            # było tu abs(), przez co zwrot zapisywał się jak wpłata od klienta. Znaku nie
+            # potwierdza dokumentacja Sfery — decyduje analogia do ścieżki KFZ, która
+            # działa na produkcji od dawna bez skarg na rozrachunki. Gdyby okazało się to
+            # błędne, widać to w zakładce płatności KFS-a i wraca tu abs().
+            self._handle_kfs_payment(nowy_dok, invoice_data, kwota_do_zaplaty)
 
             nowy_dok.Zapisz()
             if not nowy_dok.Identyfikator:

@@ -133,34 +133,40 @@ class DocumentRepository(BaseRepository):
                 ado_recordset.Close()
         return results
 
-    def find_kfs_for_base_document(self, base_doc_id: int) -> Optional[Dict]:
+    def find_kfs_for_base_document(self, base_doc_id: int) -> List[Dict]:
         """
-        Sprawdza, czy do danej FS wystawiono już korektę (KFS, typ 6).
+        Zwraca korekty (KFS, typ 6) wystawione do danej FS wraz z ich wartością brutto.
 
         Wiązanie idzie po dok_DoDokId (odpowiednik atrybutu DoDokumentuId ze Sfery),
         a nie po treści uwag — uwagi bywają obcięte do 500 znaków albo w ogóle
         nieprzeniesione przez NaPodstawie, więc szukanie po nich przepuszczało duplikaty.
+
+        Wartość jest potrzebna do odróżnienia ponowionego zadania (ta sama kwota)
+        od świadomej kolejnej korekty (inna kwota) — patrz correct_sales_invoice.
         """
         ado_recordset = None
+        results: List[Dict] = []
         try:
             sql_query = f"""
-                SELECT dok_Id, dok_NrPelny
+                SELECT dok_Id, dok_NrPelny, dok_WartBrutto
                 FROM dok__Dokument WITH (NOLOCK)
                 WHERE dok_Typ = 6 AND dok_DoDokId = {int(base_doc_id)}
             """
             ado_recordset, _ = self.ado_connection.Execute(sql_query)
-            if ado_recordset.EOF:
-                return None
-            return {
-                "doc_id": ado_recordset.Fields("dok_Id").Value,
-                "doc_number": ado_recordset.Fields("dok_NrPelny").Value,
-            }
+            while not ado_recordset.EOF:
+                results.append({
+                    "doc_id": ado_recordset.Fields("dok_Id").Value,
+                    "doc_number": ado_recordset.Fields("dok_NrPelny").Value,
+                    "total_gross": Decimal(str(ado_recordset.Fields("dok_WartBrutto").Value or 0)),
+                })
+                ado_recordset.MoveNext()
         except Exception as e:
-            logger.error(f"Błąd podczas wyszukiwania istniejącej KFS dla dokumentu {base_doc_id}: {e}")
-            return None
+            logger.error(f"Błąd podczas wyszukiwania istniejących KFS dla dokumentu {base_doc_id}: {e}")
+            return []
         finally:
             if ado_recordset and ado_recordset.State != 0:
                 ado_recordset.Close()
+        return results
 
     def get_payer_nip(self, doc_id: int) -> Optional[str]:
         """

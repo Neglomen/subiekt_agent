@@ -281,16 +281,26 @@ gwarantowanej kolejności; nie opieraj na niej logiki.
   flagę ustawioną. Nie dodawaj automatu drukowania KFS na drukarce fiskalnej.
 - **Korekty z NIP-em idą do KSeF** tą samą flagą `dok_CzekaNaKSeF` co faktury (`_mark_for_ksef`).
   O kwalifikacji decyduje NIP płatnika faktury pierwotnej (`DocumentRepository.get_payer_nip`).
-- **Druga korekta do tej samej FS jest blokowana** jako duplikat (zwracane `action_taken="existed"`).
-  Tak było przed przebudową; jeśli ma się to zmienić, to świadoma decyzja, nie efekt uboczny.
+- **Do jednej FS wolno wystawić kilka korekt** (np. najpierw ilościową, potem wartościową) —
+  od 0.11.0. Idempotencja opiera się na **wartości**: jeśli do tej samej faktury istnieje już
+  korekta o tej samej kwocie (± grosz), agent zwraca ją zamiast tworzyć drugą. Ponowione
+  zadanie Dramatiq przynosi ten sam payload, a więc i tę samą wartość, więc duplikat po
+  retry jest nadal odsiewany. Konsekwencja do zaakceptowania: dwie *celowo* identyczne
+  korekty do jednej faktury są niemożliwe.
+- **Kwota rozliczenia na KFS idzie ZE ZNAKIEM** (od 0.11.0), tak jak na korekcie zakupu.
+  Wcześniej było `abs()`, przez co zwrot zapisywał się jak wpłata od klienta.
 
 ### Otwarte
 
-- **Znak `KwotaDoZaplaty` na KFS** — nieudokumentowany. Ścieżka KFZ używa wartości ze znakiem
-  (`create_purchase_invoice`), KFS używa `abs()`. Jedna z nich jest zła. W kodzie jest `TODO`
-  i log surowej wartości ze Sfery — do rozstrzygnięcia po pierwszej korekcie na produkcji.
-  Alternatywnie: `SuDokument.PodajRozrachunek()` zwraca rozrachunek KFS-a, jego
-  `WartoscPoczatkowaWaluta` też pokaże znak.
+- **Znak `KwotaDoZaplaty` na KFS nie jest potwierdzony dokumentacją.** Od 0.11.0 kwota idzie
+  ze znakiem — decyzja zapadła przez analogię do ścieżki KFZ, która działa na produkcji od
+  dawna bez skarg na rozrachunki. Jeśli na wystawionym KFS-ie zakładka płatności pokaże
+  kwotę o odwrotnym znaku, niż powinna, wraca tu `abs()`. Do niezależnego sprawdzenia:
+  `SuDokument.PodajRozrachunek()` zwraca rozrachunek KFS-a, a jego `WartoscPoczatkowaWaluta`
+  pokaże znak.
+- **Przyczyna korekty to wolny tekst z formularza**, więc trafia na dokument tylko wtedy, gdy
+  przypadkiem pokrywa się z pozycją słownika `sl_PrzyczynaKorekty`. Docelowo: `GET
+  /correction-reasons` w agencie + lista wyboru w modalu zamiast wpisywania z palca.
 - `UjecieKorektyTyp = 2` jest zaszyte w kodzie. Jeśli księgowość zażyczy sobie ujęcia w dacie
   faktury pierwotnej — zmiana na 1.
 
