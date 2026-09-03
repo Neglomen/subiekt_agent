@@ -222,46 +222,89 @@ class DocumentService:
                 #   - Pozycja z quantity > 0 = ilość PRZED korektą
                 #   - Pozycja z quantity = 0 = ilość PO korekcie (docelowa)
 
-                # Wyznacz docelową ilość z payloadu: grupujemy po symbolu, bierzemy min ilość
+                # Payload opisuje stan PRZED i PO korekcie parami pozycji o tym samym
+                # symbolu. Zwrot ilościowy różni je ilością, korekta rabatowa — ceną.
                 from collections import defaultdict
                 payload_groups = defaultdict(list)
-                for item, adj_price in adjusted_goods:
-                    payload_groups[item.product_symbol].append((float(item.quantity), float(adj_price)))
+                for item, _adj_price in adjusted_goods:
+                    # Ceny bierzemy surowe, sprzed rozdzielenia kosztów transportu:
+                    # proporcja rabatu ma wynikać z faktury dostawcy, a nie z tego, ile
+                    # kosztów doliczyliśmy akurat do tej pozycji.
+                    payload_groups[item.product_symbol].append(
+                        (float(item.quantity), float(item.net_price))
+                    )
 
-                # Oblicz globalny target: jeśli payload mówi min=0, to pełny zwrot
                 payload_targets = {}
                 for symbol, entries in payload_groups.items():
                     quantities = [q for q, _ in entries]
-                    target_qty = min(quantities)  # np. min(1, 0) = 0 -> pełny zwrot
-                    target_price = entries[-1][1]  # cena z ostatniej pozycji (po)
-                    payload_targets[symbol] = (target_qty, target_price)
+                    payload_targets[symbol] = {
+                        "qty_after": min(quantities),   # np. min(1, 0) = 0 -> pełny zwrot
+                        "price_before": entries[0][1],
+                        "price_after": entries[-1][1],
+                    }
 
                 logger.info(f"KFZ powiązana: wyznaczone cele z payloadu: {payload_targets}")
+
+                changed_positions = 0
 
                 # Iterujemy po pozycjach na dokumencie KFZ (skopiowanych z FZ)
                 for p in nowy_dok.Pozycje:
                     original_qty = float(p.IloscJm)
                     original_price = float(p.CenaNettoPrzedRabatem)
 
-                    # Domyślnie: pełny zwrot (ilość po = 0)
-                    target_qty_after = 0.0
+                    target = self._match_kfz_target(p, payload_targets)
+                    if target is None:
+                        logger.warning(
+                            f"KFZ powiązana: pozycji '{p.TowarSymbol}' nie da się jednoznacznie "
+                            "powiązać z payloadem — zostawiam bez zmian."
+                        )
+                        continue
 
-                    # Sprawdź, czy w payload_targets jest odpowiedni target
-                    # (dla powiązanej korekty zazwyczaj jest to pełny zwrot wszystkich pozycji)
-                    if payload_targets:
-                        first_symbol = list(payload_targets.keys())[0]
-                        target_qty_after = payload_targets[first_symbol][0]
+                    target_qty_after = target["qty_after"]
 
-                    # WAŻNE: Cena po korekcie = oryginalna cena z FZ (zawiera wliczone koszty dostawy)
-                    # Payload wysyła cenę czystą od dostawcy, ale FZ ma cenę z proporcjonalnym
-                    # kosztem transportu. Na korekcie powiązanej musimy zachować cenę z FZ.
-                    target_price_after = original_price
+                    # Cena z FZ zawiera doliczony koszt transportu, więc nie wpisujemy ceny
+                    # z payloadu wprost. Rabat przenosimy jako RÓŻNICĘ, nie proporcję:
+                    # doliczony transport jest kwotą stałą i nie ma się kurczyć dlatego,
+                    # że dostawca obniżył cenę towaru. Przy zwrocie ilościowym różnica
+                    # wynosi 0 i cena zostaje nietknięta.
+                    price_before = target["price_before"]
+                    price_after = target["price_after"]
+                    price_delta = price_after - price_before
+                    if abs(price_delta) > 1e-9:
+                        target_price_after = round(original_price + price_delta, 4)
+                        if target_price_after < 0:
+                            logger.warning(
+                                f"KFZ rabatowa: rabat {abs(price_delta)} zł/jm przekracza cenę "
+                                f"{original_price} zł z faktury pierwotnej dla '{p.TowarSymbol}'. "
+                                "Ustawiam 0 — sprawdź dane korekty."
+                            )
+                            target_price_after = 0.0
+                        logger.info(
+                            f"KFZ rabatowa: pozycja '{p.TowarSymbol}' cena {original_price} -> "
+                            f"{target_price_after} (rabat {price_delta} zł/jm, dostawca: "
+                            f"{price_before} -> {price_after})"
+                        )
+                    else:
+                        target_price_after = original_price
 
                     p.IloscJmPoKorekcie = target_qty_after
                     p.CenaNettoPrzedRabatemPoKorekcie = target_price_after
+
+                    if (abs(target_qty_after - original_qty) > 1e-9
+                            or abs(target_price_after - original_price) > 1e-9):
+                        changed_positions += 1
+
                     logger.info(f"KFZ powiązana: pozycja '{p.TowarSymbol}' (TowarId={p.TowarId}), "
                                 f"IloscPrzed={original_qty} -> IloscPo={target_qty_after}, "
-                                f"CenaNetto={original_price} (zachowana z FZ)")
+                                f"CenaPrzed={original_price} -> CenaPo={target_price_after}")
+
+                if changed_positions == 0:
+                    # Dokument na 0 zł powstawał wcześniej po cichu i wyglądał jak sukces.
+                    raise ValueError(
+                        f"Korekta {invoice_data.original_invoice_number} nie zmienia żadnej pozycji "
+                        f"faktury {invoice_data.corrected_invoice_number} — ani ilości, ani ceny. "
+                        "Sprawdź dane korekty; dokument nie został utworzony."
+                    )
             else:
                 # === STANDARDOWA ŚCIEŻKA (FZ lub KFZ niepowiązana) ===
                 for i, (item, adjusted_price) in enumerate(adjusted_goods):
@@ -607,6 +650,29 @@ class DocumentService:
             if nowa_fs:
                 try: nowa_fs.Zamknij()
                 except Exception: logger.warning("Nie udało się poprawnie zamknąć obiektu FS.")
+
+    def _match_kfz_target(self, position, payload_targets: dict):
+        """
+        Dopasowuje pozycję dokumentu KFZ do celu wyliczonego z payloadu.
+
+        Symbole dostawcy nie muszą pokrywać się z symbolami w kartotece Subiekta — to
+        właśnie dlatego ta ścieżka iteruje po pozycjach dokumentu zamiast po payloadzie.
+        Przy jednym celu stosujemy go do każdej pozycji (tak działało to od początku),
+        a gdy celów jest więcej, dopasowujemy po znormalizowanym symbolu i przy braku
+        trafienia wolimy zostawić pozycję nietkniętą niż wpisać jej cudzy rabat.
+        """
+        if not payload_targets:
+            return None
+        if len(payload_targets) == 1:
+            return next(iter(payload_targets.values()))
+
+        position_symbol = normalize_symbol(str(position.TowarSymbol))
+        product_mappings = self._config.mappings.product_mappings
+        for symbol, target in payload_targets.items():
+            mapped = product_mappings.get(symbol, symbol)
+            if normalize_symbol(mapped) == position_symbol:
+                return target
+        return None
 
     def correct_sales_invoice(self, invoice_data: SalesInvoiceCorrectRequest) -> tuple[str, Decimal, str]:
         """Tworzy Korektę Faktury Sprzedaży (KFS) w Subiekcie na podstawie pierwotnej FS."""

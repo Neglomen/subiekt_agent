@@ -294,6 +294,27 @@ gwarantowanej kolejności; nie opieraj na niej logiki.
 - `UjecieKorektyTyp = 2` jest zaszyte w kodzie. Jeśli księgowość zażyczy sobie ujęcia w dacie
   faktury pierwotnej — zmiana na 1.
 
+### Korekty zakupu (KFZ) — osobna ścieżka
+
+`create_purchase_invoice` obsługuje KFZ zupełnie inaczej niż KFS: payload z parsera KSeF
+opisuje stan **przed i po** parami pozycji o tym samym symbolu, a symbole dostawcy nie
+muszą pokrywać się z kartoteką — dlatego kod iteruje po pozycjach dokumentu, a nie po
+payloadzie.
+
+- **zwrot ilościowy** — różni je ilość; cena z FZ zostaje nietknięta, bo zawiera
+  proporcjonalnie doliczony koszt transportu;
+- **korekta rabatowa** — różni je cena. Rabat przenosimy jako **różnicę**, nie proporcję:
+  doliczony transport jest kwotą stałą i nie ma się kurczyć dlatego, że dostawca obniżył
+  cenę towaru. FZ 1050 (1000 + 50 transportu) przy rabacie 1000 → 900 daje 950, czyli
+  dokładnie 100 zł korekty.
+
+Do 2026-08-31 cena po korekcie była twardo ustawiana na cenę z FZ, więc **korekty rabatowe
+tworzyły dokument na 0 zł**. Nie przywracaj `target_price_after = original_price` bez
+warunku na różnicę cen.
+
+Gdy żadna pozycja nie zmienia ani ilości, ani ceny, agent zgłasza teraz błąd zamiast
+zapisywać pusty dokument.
+
 ### Referencja zamówienia w uwagach FS
 
 Agent **celowo nie ustawia** `NumerOryginalny` — Subiekt drukowałby wtedy adnotację
